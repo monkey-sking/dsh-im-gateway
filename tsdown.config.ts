@@ -43,7 +43,7 @@ const hostConfig = {
  * would wipe the host-half output emitted by the config above.
  */
 const clientConfig = {
-  name: '@dsh/im-gateway/client',
+  name: '@lijian-ui/dsh-im-gateway/client',
   entry: { client: 'src/client/index.ts' },
   outDir: 'lib',
   format: 'cjs',
@@ -62,7 +62,7 @@ const clientConfig = {
   noExternal: (id: string) => (CLIENT_EXTERNALS.includes(id) ? undefined : true),
   outputOptions: {
     entryFileNames: 'client.js',
-    banner: `window.__ModuleLoader__.load({ id: "@dsh/im-gateway", factory: (require) => {`,
+    banner: `window.__ModuleLoader__.load({ id: "@lijian-ui/dsh-im-gateway", factory: (require) => {`,
     footer: 'return module.exports; } });',
     intro: 'var module = { exports: {} }; var exports = module.exports;',
   },
