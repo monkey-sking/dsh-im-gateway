@@ -1,0 +1,11 @@
+# dependencies & build output
+node_modules/
+lib/
+*.tgz
+
+# misc
+.DS_Store
+*.log
+
+# credentials (never commit auth tokens)
+.npmrc

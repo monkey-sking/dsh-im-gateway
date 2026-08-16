@@ -1,0 +1,24 @@
+# @lijian-ui/dsh-im-gateway bundle patch — SINGLE entry.
+#
+# One plugin (`@lijian-ui/dsh-im-gateway`) provides the core gateway service AND every
+# channel (DingTalk / QQ / 个人维修) as INSTANCES: `channels` is an ARRAY, and
+# the same channel type may appear multiple times (multi-bot support). The
+# bundle ships ZERO instances; a later patch layer (the user's profile
+# cordis.patch.yml or a --patch overlay) replaces the whole array — override
+# by `id` with the SAME shape shown here (see the profile im-dev example).
+#
+# IMPORTANT: the host deep-merge REPLACES arrays wholesale, so any overlay
+# must restate the FULL channels array, not just the instance being added.
+#
+# This entry's package (package.json) also declares dsh.client → the same
+# package carries the browser half (lib/client.js), which client-modules
+# discovers from this entry's name.
+
+- insert:
+    - id: im-gateway
+      name: '@lijian-ui/dsh-im-gateway'
+      config:
+        cwd: !!js process.cwd()
+        streamThrottleMs: 800
+        slashCommands: true
+        channels: []
