@@ -33,8 +33,9 @@ English | [简体中文](./README.md)
 
 ### Session Management
 
-- **Built-in slash commands** — `/help`, `/model`, `/status`, `/new`, `/reset`, `/stop`, `/sessions`, `/continue` (see below).
-- **Session list & continue** — `/sessions` lists recent sessions; `/continue <id>` resumes a specific session.
+- **Built-in slash commands** — `/help`, `/model`, `/status`, `/new`, `/reset`, `/stop`, `/sessions`, `/continue`, `/workspaces`, `/workspace` (see below).
+- **Session list & continue** — `/sessions` lists recent sessions (with titles); `/continue <id>` resumes a specific session.
+- **Workspace management** — `/workspaces` lists all workspaces with session counts; `/workspace <path>` switches workspace (resets the current session; next message creates a new session in the new workspace).
 - **User allowlist** — configure `allowAllUsers` or `allowedUserIds` to control who can use the bot.
 
 ---
@@ -100,8 +101,11 @@ Sent to the bot in any IM channel:
 | `/status` | Channel / cwd / current model / agent state |
 | `/new` `/reset` `/clear` | Start a fresh conversation |
 | `/stop` | Abort the current reply |
-| `/sessions` | List the 10 most recent sessions (current session marked) |
+| `/sessions` | List the 10 most recent sessions (current session marked, with titles) |
 | `/continue <session-id>` | Continue a specific session (use `/sessions` for IDs) |
+| `/workspaces` | List all workspaces (sorted by recent activity, with session counts) |
+| `/workspace <path>` | Switch to the specified workspace (resets current session; next message creates a new session in the new workspace) |
+| `/workspace` | Without arguments, same as `/workspaces` |
 
 ### Multi-segment Input Suffixes
 
@@ -200,7 +204,7 @@ IM client ──► channel adapter (dingtalk / qq / weixin)
 | --- | --- |
 | `im-gateway.ts` | Core service ImGatewayService: session management, message routing, tool registration |
 | `events.ts` | EventDispatcher: SessionEvent → IM channel operations (streaming, splitting, tool hints) |
-| `commands.ts` | CommandHandler: slash commands (/help /reset /model /status /stop /sessions /continue) |
+| `commands.ts` | CommandHandler: slash commands (/help /reset /model /status /stop /sessions /continue /workspaces /workspace) |
 | `stream.ts` | StreamThrottle: batch text-delta and push at intervals |
 | `approval.ts` | ApprovalBroker: tool approval bridge, holds approval/request pending IM reply |
 | `questions.ts` | QuestionBroker: interactive question bridge, holds ask_user_question pending IM reply |

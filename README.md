@@ -33,8 +33,9 @@
 
 ### 会话管理
 
-- **内置斜杠命令** — `/help`、`/model`、`/status`、`/new`、`/reset`、`/stop`、`/sessions`、`/continue`（见下文）。
-- **会话列表与继续** — `/sessions` 列出最近会话，`/continue <id>` 恢复指定会话。
+- **内置斜杠命令** — `/help`、`/model`、`/status`、`/new`、`/reset`、`/stop`、`/sessions`、`/continue`、`/workspaces`、`/workspace`（见下文）。
+- **会话列表与继续** — `/sessions` 列出最近会话（含标题），`/continue <id>` 恢复指定会话。
+- **工作区管理** — `/workspaces` 列出所有工作区及会话数，`/workspace <路径>` 切换工作区（自动重置当前会话，下次消息在新工作区创建新会话）。
 - **用户白名单** — 配置 `allowAllUsers` 或 `allowedUserIds` 精确控制谁可以使用机器人。
 
 ---
@@ -100,8 +101,11 @@ dsh --profile web                   # 启动后浏览器打开设置 → 「IM �
 | `/status` | 通道 / cwd / 当前模型 / agent 状态 |
 | `/new` `/reset` `/clear` | 开启全新会话 |
 | `/stop` | 中止当前回复 |
-| `/sessions` | 列出最近 10 个会话（标记当前会话） |
+| `/sessions` | 列出最近 10 个会话（标记当前会话，显示标题） |
 | `/continue <会话id>` | 继续指定会话（用 `/sessions` 查看可用 id） |
+| `/workspaces` | 列出所有工作区（按最近活动排序，显示会话数） |
+| `/workspace <路径>` | 切换到指定工作区（重置当前会话，下次消息在新工作区创建新会话） |
+| `/workspace` | 不带参数时等同于 `/workspaces` |
 
 ### 多段输入控制后缀
 
@@ -198,7 +202,7 @@ IM 客户端 ──► 通道适配器 (dingtalk / qq / weixin)
 | --- | --- |
 | `im-gateway.ts` | 核心服务 ImGatewayService：会话管理、消息路由、工具注册 |
 | `events.ts` | EventDispatcher：SessionEvent → IM 渠道操作（流式、分片、工具提示） |
-| `commands.ts` | CommandHandler：斜杠命令处理（/help /reset /model /status /stop /sessions /continue） |
+| `commands.ts` | CommandHandler：斜杠命令处理（/help /reset /model /status /stop /sessions /continue /workspaces /workspace） |
 | `stream.ts` | StreamThrottle：流式节流器，攒批 text-delta 后按间隔推送 |
 | `approval.ts` | ApprovalBroker：工具审批桥，挂起 approval/request 等待 IM 回复 |
 | `questions.ts` | QuestionBroker：交互提问桥，挂起 ask_user_question 等待 IM 回复 |
