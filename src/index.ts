@@ -1,12 +1,22 @@
 import { Context } from '@deepseek-ai/cordis'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings'
 import { ImGatewayService, Config } from './gateway/im-gateway'
 import type { ImGatewayConfig } from './gateway/types'
 import { syncChannels } from './sync'
 import { registerRemoteApi } from './remote'
+import { acquireInstanceLock } from './gateway/instance-lock'
 
 export { Config }
 export * from './gateway/types'
+// 导出核心逻辑类供单元测试使用（内部实现，不属于公开插件 API）
+export { ApprovalBroker } from './gateway/approval'
+export { QuestionBroker, formatQuestionPrompt, formatAnswerSummary, parseQuestionReply } from './gateway/questions'
+export { splitText } from './gateway/split'
+export { SessionMerger, stripControlSuffix } from './gateway/merge'
+export { acquireInstanceLock } from './gateway/instance-lock'
+export { createTranslator, type Lang, type Translator } from './gateway/i18n'
 
 /**
  * Plugin-level dependency declaration: the bundle waits for these host
@@ -27,6 +37,16 @@ const NS = settingsNamespace('im-gateway')
  * `enabled` instances connect out.
  */
 export function apply(ctx: Context, config: ImGatewayConfig): void {
+  // 实例锁：防止多个 im-gateway 共享同一 DSH_HOME 导致 session log 损坏
+  const dshHome = process.env.DSH_HOME ?? join(homedir(), '.dsh')
+  let instanceLock: ReturnType<typeof acquireInstanceLock> | undefined
+  try {
+    instanceLock = acquireInstanceLock(dshHome)
+    ctx.effect(() => () => instanceLock?.release(), 'im-gateway.instance-lock')
+  } catch (err) {
+    console.warn(`[im-gateway] 实例锁获取失败（继续启动）: ${err instanceof Error ? err.message : String(err)}`)
+  }
+
   // cordis's LoggerService only buffers logs in memory by default (the
   // default exporter just pushes into `service.buffer`), so `ctx.logger.*`
   // calls are INVISIBLE in the dsh console. Register a console exporter that

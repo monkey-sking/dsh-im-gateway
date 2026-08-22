@@ -38,11 +38,14 @@ import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import { ImChannelsSection } from './ImChannelsSection.ts'
 import { createConfigApi } from './config-api.ts'
+import { zh as clientZh, en as clientEn } from './client-i18n.ts'
 
 /** Section identity in the Settings left-nav rail. */
 const SECTION_ID = 'im-channels'
 /** Sits below Models (order 10) in the settings nav. */
 const SECTION_ORDER = 20
+/** i18n namespace for this plugin's client-side text. */
+const I18N_NS = 'im-gateway'
 
 /** Services this browser plugin requires (cordis fiber inject). */
 export const inject = ['slots', 'locale', 'connection', 'remote']
@@ -54,11 +57,19 @@ export const inject = ['slots', 'locale', 'connection', 'remote']
 export function apply(ctx: ClientContext): void {
   const configApi = createConfigApi(ctx)
 
+  // Register bilingual dictionaries with the dsh locale service.
+  ctx.effect(() => ctx.locale.register(I18N_NS, { zh: clientZh, en: clientEn }), 'im-gateway: client dictionaries')
+
+  // Bind the translation function — t(key, params) always returns the
+  // current language's text (re-evaluated on each call, so slot-rendered
+  // copy follows locale/change automatically).
+  const t = ctx.locale.bind(I18N_NS)
+
   ctx.slots.inject('settings.section', () => ctx.slots.register({
     name: 'settings.section',
     id: SECTION_ID,
     order: SECTION_ORDER,
-    label: () => 'IM 通道',
-    inject: () => ({ configApi }),
+    label: () => t('section.label'),
+    inject: () => ({ configApi, t }),
   }, ImChannelsSection))
 }

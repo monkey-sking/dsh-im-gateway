@@ -14,7 +14,7 @@
 import { createElement, useEffect, useState } from 'react'
 import {
   ImChannelModal,
-  TYPE_LABELS,
+
   TYPE_ORDER,
   type ChannelDraft,
   type ImChannelInstance,
@@ -25,6 +25,8 @@ import type { ConfigApi } from './config-api.ts'
 export interface ImChannelsSectionProps {
   /** Config read/write api (host route backed). */
   configApi: ConfigApi
+  /** Translation function (bound to 'im-gateway' namespace). */
+  t: (key: string, params?: Record<string, unknown>) => string
 }
 
 // ── inline styles (ported from pi-desk-top ImPage.module.css) ──
@@ -63,7 +65,13 @@ const badgeOff: React.CSSProperties = { ...badge, color: 'var(--dsw-alias-state-
 const badgeOn: React.CSSProperties = { ...badge, color: 'var(--dsw-alias-state-success-primary, #1D9E75)', borderColor: 'rgba(29,158,117,0.35)', background: 'rgba(29,158,117,0.08)' }
 const channelSub: React.CSSProperties = { fontSize: 11, color: 'var(--dsw-alias-label-tertiary, #888)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }
 const channelActions: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }
-const iconBtn: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 30, height: 30, border: 'none', borderRadius: 6, background: 'transparent', color: 'var(--dsw-alias-label-tertiary, #888)', cursor: 'pointer' }
+const iconBtn: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 44, height: 44, border: 'none', borderRadius: 6, background: 'transparent', color: 'var(--dsw-alias-label-tertiary, #888)', cursor: 'pointer' }
+
+/** Edit button — text style matching the official models settings page (secondaryButton). */
+const editBtn: React.CSSProperties = { boxSizing: 'border-box', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', height: 28, padding: '0 10px', fontSize: 12, lineHeight: '18px', borderRadius: 14, border: '1px solid var(--dsw-alias-border-l2, #ddd)', background: 'transparent', color: 'var(--dsw-alias-label-primary, inherit)', cursor: 'pointer' }
+
+/** Delete button — text style matching the official models settings page (dangerButton). */
+const deleteBtn: React.CSSProperties = { boxSizing: 'border-box', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', height: 28, padding: '0 10px', fontSize: 12, lineHeight: '18px', borderRadius: 14, border: 'none', background: 'transparent', color: 'var(--dsw-alias-state-error-primary, #e24b4a)', cursor: 'pointer' }
 const toggleBtn: React.CSSProperties = { position: 'relative', width: 36, height: 21, border: 'none', borderRadius: 999, background: 'var(--dsw-alias-border-l2, #ccc)', cursor: 'pointer', padding: 0, flexShrink: 0 }
 const toggleOn: React.CSSProperties = { ...toggleBtn, background: 'var(--dsw-alias-state-business-primary, #185FA5)' }
 const toggleKnob: React.CSSProperties = { position: 'absolute', left: 2, top: 2, width: 17, height: 17, borderRadius: '50%', background: '#fff', boxShadow: '0 1px 2px rgba(0,0,0,0.25)', transition: 'left 0.15s ease' }
@@ -109,7 +117,7 @@ function ChannelGlyph({ type }: { type: string }) {
  * @param props - injected config api.
  */
 export function ImChannelsSection(props: ImChannelsSectionProps) {
-  const { configApi } = props
+  const { configApi, t } = props
 
   const [channels, setChannels] = useState<ImChannelInstance[]>([])
   const [revision, setRevision] = useState<number | undefined>(undefined)
@@ -126,7 +134,7 @@ export function ImChannelsSection(props: ImChannelsSectionProps) {
     configApi.load().then((result) => {
       if (!current) return
       if (!result.ok) {
-        setError(result.message ?? '加载配置失败')
+        setError(result.message ?? t('error.loadFailed'))
       } else {
         setChannels(Array.isArray(result.channels) ? result.channels : [])
         setRevision(result.revision)
@@ -152,7 +160,7 @@ export function ImChannelsSection(props: ImChannelsSectionProps) {
   const refresh = async (): Promise<void> => {
     const result = await configApi.load()
     if (!result.ok) {
-      setError(result.message ?? '刷新配置失败')
+      setError(result.message ?? t('error.refreshFailed'))
       return
     }
     setChannels(Array.isArray(result.channels) ? result.channels : [])
@@ -165,7 +173,7 @@ export function ImChannelsSection(props: ImChannelsSectionProps) {
     setError('')
     const result = await configApi.save(next, revision)
     if (!result.ok) {
-      setError(result.message ?? `保存失败（${result.code ?? 'unknown'}）`)
+      setError(result.message ?? t('error.saveFailed', { 0: result.code ?? 'unknown' }))
       throw new Error(result.message ?? 'save failed')
     }
     await refresh()
@@ -192,14 +200,14 @@ export function ImChannelsSection(props: ImChannelsSectionProps) {
 
   const groups = TYPE_ORDER.map((type) => ({
     type,
-    label: TYPE_LABELS[type] ?? type,
+    label: type === 'dingtalk' ? t('type.dingtalk') : type === 'qq' ? t('type.qq') : type === 'weixin' ? t('type.weixin') : type,
     items: channels.filter((inst) => inst.type === type),
   }))
 
   return createElement('div', { style: page },
     createElement('div', { style: header },
       createElement('div', { style: titleRow },
-        createElement('h2', { style: title }, 'IM 通道'),
+        createElement('h2', { style: title }, t('page.title')),
         channels.length > 0 ? createElement('span', { style: countBadge }, String(channels.length)) : null,
       ),
       createElement('div', { style: headerRight },
@@ -207,16 +215,16 @@ export function ImChannelsSection(props: ImChannelsSectionProps) {
           createElement('svg', { width: 16, height: 16, viewBox: '0 0 16 16', fill: 'none', stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round' },
             createElement('path', { d: 'M8 3v10M3 8h10' }),
           ),
-          createElement('span', null, '添加通道'),
+          createElement('span', null, t('btn.add')),
         ),
       ),
     ),
     createElement('div', { style: body },
       error ? createElement('div', { style: errorStyle }, error) : null,
-      loading ? createElement('div', { style: empty }, createElement('p', { style: emptyText }, '加载中…')) : (
+      loading ? createElement('div', { style: empty }, createElement('p', { style: emptyText }, t('state.loading'))) : (
         channels.length === 0 ? (
           createElement('div', { style: empty },
-            createElement('p', { style: emptyText }, '暂无通道，点击右上角「添加通道」开始接入'),
+            createElement('p', { style: emptyText }, t('state.empty')),
           )
         ) : (
           createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 16 } },
@@ -234,8 +242,8 @@ export function ImChannelsSection(props: ImChannelsSectionProps) {
                       createElement('div', { style: channelInfo },
                         createElement('div', { style: channelNameRow },
                           createElement('span', { style: { ...statusDot, background: statusColor(statuses[inst.id]) }, title: statuses[inst.id]?.status ?? 'unknown' }),
-                          createElement('span', { style: channelName }, inst.name || (TYPE_LABELS[inst.type] ?? inst.type)),
-                          createElement('span', { style: inst.enabled ? badgeOn : badgeOff }, inst.enabled ? '已连接' : '未启用'),
+                          createElement('span', { style: channelName }, inst.name || (inst.type === 'dingtalk' ? t('type.dingtalk') : inst.type === 'qq' ? t('type.qq') : inst.type === 'weixin' ? t('type.weixin') : inst.type)),
+                          createElement('span', { style: inst.enabled ? badgeOn : badgeOff }, inst.enabled ? t('badge.connected') : t('badge.disabled')),
                         ),
                         createElement('span', { style: channelSub }, inst.id),
                       ),
@@ -243,19 +251,12 @@ export function ImChannelsSection(props: ImChannelsSectionProps) {
                         createElement('button', {
                           type: 'button',
                           style: inst.enabled ? toggleOn : toggleBtn,
-                          title: inst.enabled ? '停用' : '启用',
+                          title: inst.enabled ? t('toggle.disable') : t('toggle.enable'),
                           onClick: () => void handleToggle(inst.id, inst.enabled),
                         }, createElement('span', { style: inst.enabled ? toggleKnobOn : toggleKnob })),
-                        createElement('button', { type: 'button', style: iconBtn, title: '编辑', onClick: () => { setEditId(inst.id); setModalOpen(true) } },
-                          createElement('svg', { width: 14, height: 14, viewBox: '0 0 16 16', fill: 'none', stroke: 'currentColor', strokeWidth: 1.3, strokeLinecap: 'round', strokeLinejoin: 'round' },
-                            createElement('path', { d: 'M11.5 2.5l2 2L6 12l-3 1 1-3 7.5-7.5z' }),
-                          ),
-                        ),
-                        createElement('button', { type: 'button', style: iconBtn, title: '删除', onClick: () => setPendingDelete(inst.id) },
-                          createElement('svg', { width: 14, height: 14, viewBox: '0 0 16 16', fill: 'none', stroke: 'currentColor', strokeWidth: 1.3, strokeLinecap: 'round', strokeLinejoin: 'round' },
-                            createElement('path', { d: 'M3 5h10M6.5 5V3.5h3V5M5 5l.5 7.5h5L11 5M6.5 7.5v3M9.5 7.5v3' }),
-                          ),
-                        ),
+                        createElement('button', { type: 'button', style: editBtn, onClick: () => { setEditId(inst.id); setModalOpen(true) } }, t('btn.edit')),
+                        createElement('button', { type: 'button', style: deleteBtn, onClick: () => setPendingDelete(inst.id) }, t('btn.delete')),
+
                       ),
                     )
                   )),
@@ -270,6 +271,7 @@ export function ImChannelsSection(props: ImChannelsSectionProps) {
       editId,
       instances: channels,
       configApi,
+      t,
       onClose: () => { setModalOpen(false); setEditId(undefined) },
       onSave: handleSave,
     }) : null,
@@ -281,11 +283,11 @@ export function ImChannelsSection(props: ImChannelsSectionProps) {
         style: { display: 'flex', flexDirection: 'column', gap: 12, width: 380, maxWidth: '100%', background: 'var(--dsw-alias-bg-layer-2, #fff)', border: '1px solid var(--dsw-alias-border-l2, #ddd)', borderRadius: 14, padding: '18px', boxShadow: '0 20px 48px rgba(0,0,0,0.36)' },
         onClick: (e: React.MouseEvent) => e.stopPropagation(),
       },
-        createElement('div', { style: { fontSize: 15, fontWeight: 500 } }, '删除通道'),
-        createElement('p', { style: { fontSize: 13, color: 'var(--dsw-alias-label-secondary, #555)', margin: 0 } }, '确定删除该通道？其配置将被移除。'),
+        createElement('div', { style: { fontSize: 15, fontWeight: 500 } }, t('delete.title')),
+        createElement('p', { style: { fontSize: 13, color: 'var(--dsw-alias-label-secondary, #555)', margin: 0 } }, t('delete.confirm')),
         createElement('div', { style: { display: 'flex', justifyContent: 'flex-end', gap: 8 } },
-          createElement('button', { style: { height: 32, padding: '0 14px', background: 'transparent', color: 'inherit', border: '1px solid var(--dsw-alias-border-l2, #ccc)', borderRadius: 8, cursor: 'pointer', fontSize: 13 }, onClick: () => setPendingDelete(undefined) }, '取消'),
-          createElement('button', { style: { height: 32, padding: '0 14px', background: 'var(--dsw-alias-state-error-primary, #e24b4a)', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: 13 }, onClick: () => void handleDelete() }, '删除'),
+          createElement('button', { style: { height: 32, padding: '0 14px', background: 'transparent', color: 'inherit', border: '1px solid var(--dsw-alias-border-l2, #ccc)', borderRadius: 8, cursor: 'pointer', fontSize: 13 }, onClick: () => setPendingDelete(undefined) }, t('btn.cancel')),
+          createElement('button', { style: { height: 32, padding: '0 14px', background: 'var(--dsw-alias-state-error-primary, #e24b4a)', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: 13 }, onClick: () => void handleDelete() }, t('btn.confirmDelete')),
         ),
       ),
     ) : null,

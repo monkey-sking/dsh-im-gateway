@@ -1,6 +1,6 @@
 import { Context, Service } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
-import { SessionId, type Session, type SessionEvent } from '@deepseek-ai/dsh-session'
+import { SessionId } from '@deepseek-ai/dsh-session'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock, UserMessage } from '@deepseek-ai/dsh-llm'
 import { installModelSelection } from '@deepseek-ai/dsh-agent'
@@ -12,6 +12,24 @@ import type {
   ImGatewayConfig,
   ImInboundMessage,
 } from './types'
+import { ApprovalBroker } from './approval'
+import { QuestionBroker, formatQuestionPrompt, formatAnswerSummary } from './questions'
+
+import { SessionMerger } from './merge'
+import { StreamThrottle } from './stream'
+import { CommandHandler } from './commands'
+import type { GatewayHandle } from './commands'
+import { EventDispatcher } from './events'
+import { createTranslator, type Translator, breakChars } from './i18n'
+import { settingsNamespace } from '@deepseek-ai/dsh-settings'
+import type { ApprovalOutcome } from '@deepseek-ai/dsh-user-approval'
+import type { AskUserQuestionAnswer, AskUserQuestionRequest } from '@deepseek-ai/dsh-user-questions'
+// 引入 dsh-user-approval / dsh-user-questions 的模块增强（让 ctx.on('approval/request') 和 ctx.userQuestions 类型可用）
+import type {} from '@deepseek-ai/dsh-user-approval'
+import type {} from '@deepseek-ai/dsh-user-questions'
+import { existsSync, mkdirSync, readFileSync, writeFileSync, statSync, renameSync } from 'node:fs'
+import { join } from 'node:path'
+import { homedir } from 'node:os'
 
 // cordis reads `export const Config` as this plugin's config schema.
 // Single-entry bundle: the gateway core + every channel instance live in ONE
@@ -22,6 +40,12 @@ export const Config = Schema.object({
   cwd: Schema.string().default(process.cwd()),
   streamThrottleMs: Schema.number().default(800),
   slashCommands: Schema.boolean().default(true),
+  approvalTimeoutSecs: Schema.number().default(120),
+  questionTimeoutSecs: Schema.number().default(600),
+  allowAllUsers: Schema.boolean().default(false),
+  allowedUserIds: Schema.dict(Schema.array(Schema.string())).default({}),
+  mergeTimeoutSecs: Schema.number().default(3),
+
   channels: Schema.array(
     Schema.object({
       id: Schema.string().required(),
@@ -87,10 +111,8 @@ export class ImGatewayService extends Service implements ImGateway {
   /** Deduplicate concurrent ensureSession calls for the same conversation. */
   private readonly sessionCreations = new Map<string, Promise<SessionId>>()
   private readonly serialQueues = new Map<string, Promise<void>>()
-  private readonly pendingStream = new Map<string, { text: string; timer?: ReturnType<typeof setTimeout> }>()
-  private readonly finalText = new Map<string, string>()
-  /** Whether beginStream was already called for this conversation's reply cycle. */
-  private readonly streamStarted = new Map<string, boolean>()
+
+
   private readonly agentHandles = new Map<string, AgentHandle>()
   /** Per-session model-selection ref (so /model can switch without re-injecting). */
   private readonly modelRefs = new Map<string, ModelSelectionRef>()
@@ -102,9 +124,91 @@ export class ImGatewayService extends Service implements ImGateway {
    * (i.e. session not yet created). Survives across conversations until cleared.
    */
   private globalModelOverride?: { provider: string; model: string; reasoningEffort?: string }
+
+  /** 设置全局默认模型覆盖（CommandHandler 通过 GatewayHandle 调用）。 */
+  setGlobalModelOverride(v: { provider: string; model: string; reasoningEffort?: string } | undefined): void {
+    this.globalModelOverride = v
+  }
+
+  /** 每会话工作区偏好（convKey → workspace path），由 /workspace 命令设置。 */
+  private readonly workspaces = new Map<string, string>()
+
+  /** 每会话 generation 计数器（/new 递增，使 sessionId 变化以避免 resume 旧会话）。 */
+  private readonly sessionGenerations = new Map<string, number>()
+
+  /** /new 时用 Date.now() 作为 generation，确保 sessionId 唯一，避免 resume 旧会话。 */
+  bumpSessionGeneration(convKey: string): void {
+    this.sessionGenerations.set(convKey, Date.now())
+  }
+
+  /** 当前会话的工作区偏好（无则返回 undefined，调用方回退到 config.cwd）。 */
+  workspaceOf(convKey: string): string | undefined {
+    return this.workspaces.get(convKey)
+  }
+
+  /** 设置会话工作区偏好，持久化到 workspaces.json。 */
+  setWorkspace(convKey: string, path: string): void {
+    this.workspaces.set(convKey, path)
+    this.persistWorkspaces()
+  }
+
+  /** 工作区偏好持久化文件路径。 */
+  private workspaceStorePath(): string {
+    const stateDir = join(homedir(), '.dsh', 'im-gateway')
+    return join(stateDir, 'workspaces.json')
+  }
+
+  /** 加载持久化的工作区偏好（启动时调用）。 */
+  private loadWorkspaces(): void {
+    try {
+      const raw = readFileSync(this.workspaceStorePath(), 'utf8')
+      const entries = JSON.parse(raw) as Array<[string, string]>
+      if (Array.isArray(entries)) {
+        for (const [key, path] of entries) {
+          if (typeof key === 'string' && typeof path === 'string') {
+            this.workspaces.set(key, path)
+          }
+        }
+      }
+    } catch { /* file not found or invalid — start fresh */ }
+  }
+
+  /** 持久化工作区偏好到 workspaces.json。 */
+  private persistWorkspaces(): void {
+    try {
+      const stateDir = join(homedir(), '.dsh', 'im-gateway')
+      mkdirSync(stateDir, { recursive: true })
+      const entries = [...this.workspaces.entries()]
+      writeFileSync(this.workspaceStorePath(), JSON.stringify(entries, null, 2))
+    } catch (err) {
+      this.ctx.logger.warn(`[im-gateway] 工作区偏好持久化失败: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
   /** Live channel runtime status, surfaced to the settings UI via getChannelStatuses. */
   private readonly channelStatuses = new Map<string, ChannelStatus>()
+  /** 审批桥：挂起 approval/request，等待 IM 侧「批准/拒绝」答复。 */
+  private readonly approvalBroker = new ApprovalBroker()
+  /** 提问桥：挂起 ask_user_question，等待 IM 侧回复选项编号/文字。 */
+  private readonly questionBroker = new QuestionBroker()
+  /** UI 批准的渠道白名单用户（重启后需重新灌入）。 */
+  private readonly extraAllowlist = new Map<string, Set<string>>()
+  /** 多段输入合并器：用户连续发多条消息时合并为一条。 */
+  private merger?: SessionMerger
+  /** 工具卸载句柄（im_send_file 等）。 */
+  private readonly disposeTools: Array<() => void> = []
+  /** 流式节流器：攒批 text-delta 后按间隔推送渠道。 */
+  private streamThrottle?: StreamThrottle
+  /** Slash 命令处理器。 */
+  private commandHandler?: CommandHandler
+  /** 事件分发器：把 dsh SessionEvent 翻译为 IM 渠道操作。 */
+  private eventDispatcher?: EventDispatcher
+  /** 翻译器（中/英文）。 */
+  private t: Translator = createTranslator('zh')
+  /** 恢复 ctx.userQuestions.ask 原始实现（卸载时调用）。 */
+  private restoreUserQuestionsAsk?: () => void
   private unsubSessionEvent?: () => void
+  private unsubLocaleChange?: () => void
+  private unsubApproval?: () => void
   private active = false
 
   constructor(ctx: Context, private readonly config: ImGatewayConfig) {
@@ -187,6 +291,21 @@ export class ImGatewayService extends Service implements ImGateway {
       this.active = false
       this.unsubSessionEvent?.()
       this.unsubSessionEvent = undefined
+      this.unsubLocaleChange?.()
+      this.unsubLocaleChange = undefined
+      this.unsubApproval?.()
+      this.unsubApproval = undefined
+      this.approvalBroker.dispose()
+      this.restoreUserQuestionsAsk?.()
+      this.restoreUserQuestionsAsk = undefined
+      this.questionBroker.dispose()
+      this.merger?.dispose()
+      this.merger = undefined
+      for (const dispose of this.disposeTools) dispose()
+      this.disposeTools.length = 0
+      this.streamThrottle?.dispose()
+      this.streamThrottle = undefined
+      this.eventDispatcher = undefined
       for (const adapter of this.channels.values()) {
         try {
           await adapter.stop()
@@ -204,13 +323,46 @@ export class ImGatewayService extends Service implements ImGateway {
     }
 
     this.active = true
+    this.loadWorkspaces()
+    this.streamThrottle = new StreamThrottle(this.config.streamThrottleMs)
+    this.t = createTranslator(this.resolveLang())
+    this.questionBroker.t = this.t
+    const self = this
+    this.eventDispatcher = new EventDispatcher({
+      ctx: this.ctx,
+      get t() { return self.t },
+      sessionToConv: this.sessionToConv,
+      streamThrottle: this.streamThrottle,
+      channelForConv: (convKey: string) => this.channelForConv(convKey),
+    })
+    this.commandHandler = new CommandHandler(this as GatewayHandle)
+    // 监听全局语言切换（dsh 设置 → 通用设置 → 语言）
+    this.unsubLocaleChange = this.ctx.root.on('settings/updated', (ns, next) => {
+      if (ns !== settingsNamespace('locale')) return
+      const lang = (next as { preference?: 'zh' | 'en' })?.preference ?? 'zh'
+      this.t = createTranslator(lang)
+      this.questionBroker.t = this.t
+    })
     // Subscribe on the ROOT context: cordis dispatches events only on the
     // ctx that emitted them (no parent/child propagation), and session events
     // are emitted on the root context by the session service. A subscription
     // on this plugin's child ctx would silently receive NOTHING.
     this.unsubSessionEvent = this.ctx.root.on('session/event', (session, event) =>
-      this.onSessionEvent(session, event),
+      this.eventDispatcher!.dispatch(session, event),
     )
+    // 审批桥：approval/request waterfall → 推送到会话所在 chat → 回复「批准/拒绝」→ 返回 verdict
+    this.unsubApproval = this.ctx.root.on('approval/request', async (req, next) =>
+      this.handleApprovalRequest(req, next),
+    )
+    // 提问桥：包装 ctx.userQuestions.ask，让 IM 侧也能回答 ask_user_question
+    this.installQuestionBridge()
+    // 多段输入合并器：超时回调里注入合并后的文本
+    this.merger = new SessionMerger({
+      mergeTimeoutMs: this.config.mergeTimeoutSecs * 1000,
+      onFlush: (convKey, text) => this.onMergeFlush(convKey, text),
+    })
+    // 注册 im_send_file 工具：agent 可把工作区文件发给当前 IM 聊天
+    this.registerSendFileTool()
     for (const adapter of this.channels.values()) {
       try {
         await adapter.start()
@@ -235,7 +387,7 @@ export class ImGatewayService extends Service implements ImGateway {
     }
     if (this.config.slashCommands && message.text.trimStart().startsWith('/')) {
       try {
-        const handled = await this.handleSlash(channel, message)
+        const handled = await this.commandHandler!.handle(channel, message)
         if (handled) return
       } catch (err) {
         // NEVER swallow slash-command failures: a broken command must reply
@@ -246,19 +398,57 @@ export class ImGatewayService extends Service implements ImGateway {
         const convId = convOf(convKey)
         const detail = err instanceof Error ? err.message : String(err)
         this.ctx.logger.error(`[im-gateway] slash command failed: ${detail}`, err)
-        await channel.sendText(convId, `⚠️ 命令执行失败：${detail}`).catch(() => undefined)
+        await channel.sendText(convId, this.t.t('gw.cmd.failed', detail)).catch(() => undefined)
         return
       }
     }
 
-    const convKey = `${message.channelId}:${message.conversationId}`
-    const sessionId = await this.ensureSession(convKey)
-    const parts = toContentBlocks(message)
+    // 审批答复检测：用户回复「批准/拒绝」时消费 pending 审批，不转发给 agent
+    const verdictText = message.text.trim().toLowerCase()
+    const approveKw = this.t.t('gw.auth.approve').toLowerCase()
+    const agreeKw = this.t.t('gw.auth.agree').toLowerCase()
+    const rejectKw = this.t.t('gw.auth.reject').toLowerCase()
+    if (verdictText === approveKw || verdictText === agreeKw || verdictText === 'yes' || verdictText === 'y' || verdictText === 'allow') {
+      const handled = await this.answerApproval(channel, message, true)
+      if (handled) return
+    }
+    if (verdictText === rejectKw || verdictText === 'no' || verdictText === 'n' || verdictText === 'reject' || verdictText === 'deny') {
+      const handled = await this.answerApproval(channel, message, false)
+      if (handled) return
+    }
 
-    // Serialize turns per conversation so a fast second message waits for the first.
-    const prev = this.serialQueues.get(convKey) ?? Promise.resolve()
-    const next = prev.then(() => this.runTurn(sessionId, convKey, channel, parts))
-    this.serialQueues.set(convKey, next.catch(() => undefined))
+    // 提问答复检测：有 pending 提问时尝试解析为答案，不转发给 agent
+    if (await this.answerQuestion(channel, message)) return
+
+
+    const convKey = `${message.channelId}:${message.conversationId}`
+
+    // 多段输入合并：用户连续发多条消息时合并为一条再提交给 agent
+    const mergeResult = this.merger?.ingest(convKey, message.text)
+    if (mergeResult && mergeResult.kind === 'flushed' && mergeResult.text) {
+      const sessionId = await this.ensureSession(convKey)
+      const parts = toContentBlocks({ ...message, text: mergeResult.text })
+      // Serialize turns per conversation so a fast second message waits for the first.
+      const prev = this.serialQueues.get(convKey) ?? Promise.resolve()
+      const next = prev.then(() => this.runTurn(sessionId, convKey, channel, parts))
+      this.serialQueues.set(convKey, next.catch(() => undefined))
+    }
+    // buffered / ignored: 等待后续消息或超时
+  }
+
+  /** 合并窗口超时回调：把合并后的文本注入 agent。 */
+  private async onMergeFlush(convKey: string, text: string): Promise<void> {
+    const channel = this.channelForConv(convKey)
+    if (!channel) return
+    try {
+      const sessionId = await this.ensureSession(convKey)
+      const parts: ContentBlock[] = [{ type: 'text', text }]
+      const prev = this.serialQueues.get(convKey) ?? Promise.resolve()
+      const next = prev.then(() => this.runTurn(sessionId, convKey, channel, parts))
+      this.serialQueues.set(convKey, next.catch(() => undefined))
+    } catch (err) {
+      this.ctx.logger.error(`[im-gateway] merge flush failed for ${convKey}`, err)
+    }
   }
 
   private async ensureSession(convKey: string): Promise<SessionId> {
@@ -295,14 +485,17 @@ export class ImGatewayService extends Service implements ImGateway {
    *   3. Neither → genuinely new conversation: `agents.create`.
    */
   private async ensureSessionInner(convKey: string): Promise<SessionId> {
-    const sessionId = SessionId(`im:${convKey}`)
+    const generation = this.sessionGenerations.get(convKey) ?? 0
+    const sessionId = SessionId(generation === 0 ? `im:${convKey}` : `im:${convKey}:${generation}`)
+    const wsPref = this.workspaceOf(convKey)
+    console.log(`[im-gateway] ensureSession: convKey=${convKey} gen=${generation} sessionId=${sessionId} wsPref=${wsPref ?? '(none)'}`)
 
     // 1) Live agent already exists (defensive; same-process reuse).
     const live = this.ctx.agents.get(sessionId)
     if (live) {
+      console.log(`[im-gateway] ensureSession: branch 1 (live reuse)`)
       this.convToSession.set(convKey, sessionId)
       this.sessionToConv.set(sessionId, convKey)
-      await this.attachToWorkspace(sessionId)
       return sessionId
     }
 
@@ -313,17 +506,18 @@ export class ImGatewayService extends Service implements ImGateway {
     if (persistence) {
       const stored = (await persistence.list()).find((header) => header.id === sessionId)
       if (stored) {
+        console.log(`[im-gateway] ensureSession: branch 2 (resume from persistence)`)
         const handle = await this.ctx.agents.resume({ resumeSessionId: sessionId })
-        // A resumed agent also needs the model-selection injection (same as create).
         this.installModelSelection(handle.agent, sessionId)
         this.agentHandles.set(sessionId, handle)
         this.convToSession.set(convKey, sessionId)
         this.sessionToConv.set(sessionId, convKey)
         this.ctx.logger.info(`[im-gateway] resumed session ${sessionId} (history kept)`)
-        await this.attachToWorkspace(sessionId)
+        await this.attachToWorkspace(sessionId, wsPref ?? this.config.cwd)
         return sessionId
       }
     }
+
 
     // 3) Genuinely new conversation → create. ctx.agents.create() mints BOTH
     // the session and the agent loop under this shared identity
@@ -335,14 +529,18 @@ export class ImGatewayService extends Service implements ImGateway {
     // stale process), create() rejects with an id collision. In that case
     // fall back to resume() so a stable IM conversation is never lost and the
     // user never sees a bare "id collision".
+    console.log(`[im-gateway] ensureSession: branch 3 (create new)`)
     let handle: AgentHandle
+    const effectiveCwd = wsPref ?? this.config.cwd
+    console.log(`[im-gateway] ensureSession: effectiveCwd="${effectiveCwd}"`)
     try {
       handle = await this.ctx.agents.create({
         sessionId,
-        meta: { cwd: this.config.cwd },
+        meta: { cwd: effectiveCwd },
       })
     } catch (err) {
       if (isIdCollision(err)) {
+        console.log(`[im-gateway] ensureSession: id collision, falling back to resume`)
         handle = await this.ctx.agents.resume({ resumeSessionId: sessionId })
       } else {
         throw err
@@ -359,7 +557,9 @@ export class ImGatewayService extends Service implements ImGateway {
 
     this.convToSession.set(convKey, sessionId)
     this.sessionToConv.set(sessionId, convKey)
-    await this.attachToWorkspace(sessionId)
+    console.log(`[im-gateway] ensureSession: session created, calling attachToWorkspace`)
+    await this.attachToWorkspace(sessionId, effectiveCwd)
+    console.log(`[im-gateway] ensureSession: done for ${sessionId}`)
     return sessionId
   }
 
@@ -379,26 +579,119 @@ export class ImGatewayService extends Service implements ImGateway {
    *
    * Best-effort: workspace grouping must never block or fail an IM turn.
    */
-  private async attachToWorkspace(sessionId: SessionId): Promise<void> {
+  private async attachToWorkspace(sessionId: SessionId, cwd?: string): Promise<void> {
     try {
       const workspaceRegistry = this.ctx.get('workspaceRegistry') as
         | {
-            resolveByPath(path: string): Promise<{ attachSession(id: SessionId): Promise<void> } | undefined>
             create(path: string): Promise<{ attachSession(id: SessionId): Promise<void> }>
+            list(): Array<{ path: string; sessionIds: string[] }>
           }
         | undefined
-      if (!workspaceRegistry) return
-      const cwd = this.config.cwd
-      if (!cwd) return
-      let workspace = await workspaceRegistry.resolveByPath(cwd)
-      if (!workspace) {
-        workspace = await workspaceRegistry.create(cwd)
+      if (!workspaceRegistry) {
+        console.warn(`[im-gateway] workspaceRegistry unavailable; session ${sessionId} will be ungrouped`)
+        return
       }
+      const effectiveCwd = cwd ?? this.config.cwd
+      console.log(`[im-gateway] attachToWorkspace: sessionId=${sessionId} cwd="${effectiveCwd}"`)
+
+      // 备份 workspace.json 的 sessionIds（attachSession 中 mutate 会过滤掉 sessionPath 不匹配的旧会话）
+      const beforeIds = this.readWorkspaceSessionIds(effectiveCwd)
+
+      const workspace = await workspaceRegistry.create(effectiveCwd)
       await workspace.attachSession(sessionId)
-      this.ctx.logger.info(`[im-gateway] attached session ${sessionId} to workspace "${cwd}"`)
+      console.log(`[im-gateway] attachToWorkspace: attachSession succeeded`)
+
+      // 恢复被 mutate 移除的旧会话（直接写 workspace.json，绕过 mutate 的过滤）
+      const afterIds = this.readWorkspaceSessionIds(effectiveCwd)
+      const removed = beforeIds.filter((id) => !afterIds.includes(id) && id !== String(sessionId))
+      if (removed.length > 0) {
+        console.log(`[im-gateway] attachToWorkspace: restoring ${removed.length} sessions removed by mutate: ${JSON.stringify(removed)}`)
+        this.restoreWorkspaceSessionIds(effectiveCwd, removed)
+      }
     } catch (err) {
-      this.ctx.logger.warn(`[im-gateway] workspace attach failed for ${sessionId}`, err)
+      console.warn(`[im-gateway] workspace attach failed for ${sessionId}:`, err instanceof Error ? err.message : String(err))
     }
+  }
+
+  /** 读取 workspace.json 中指定 path 的 sessionIds。 */
+  private readWorkspaceSessionIds(cwd: string): string[] {
+    try {
+      const file = join(homedir(), '.dsh', 'storages', 'workspace.json')
+      const raw = readFileSync(file, 'utf8')
+      const data = JSON.parse(raw) as { tables?: { workspaces?: Record<string, { path?: string; sessionIds?: string[] }> } }
+      for (const w of Object.values(data.tables?.workspaces ?? {})) {
+        if (w.path === cwd) return w.sessionIds ?? []
+      }
+    } catch { /* ignore */ }
+    return []
+  }
+
+  /** 把被移除的 sessionIds 写回 workspace.json（直接写文件，不经过 mutate）。 */
+  private restoreWorkspaceSessionIds(cwd: string, ids: string[]): void {
+    try {
+      const file = join(homedir(), '.dsh', 'storages', 'workspace.json')
+      const raw = readFileSync(file, 'utf8')
+      const data = JSON.parse(raw) as { tables?: { workspaces?: Record<string, { path?: string; sessionIds?: string[]; createdAt?: string; updatedAt?: string }> } }
+      for (const w of Object.values(data.tables?.workspaces ?? {})) {
+        if (w.path === cwd && w.sessionIds) {
+          for (const id of ids) {
+            if (!w.sessionIds.includes(id)) w.sessionIds.push(id)
+          }
+        }
+      }
+      const tmp = `${file}.tmp`
+      writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf8')
+      renameSync(tmp, file)
+    } catch (err) {
+      console.warn(`[im-gateway] restoreWorkspaceSessionIds failed:`, err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  /**
+   * 诊断：全面记录 workspace 状态。
+   * - workspace.json 原始 sessionIds（session-cleaner 用这个判断 active）
+   * - workspaceRegistry.list() 投影后 sessionIds（桌面端 UI 用这个显示）
+   * - ctx.sessions.list() live sessions（dispose 后会消失）
+   * - sessionPersistence.list() 持久化会话（dispose 后仍存在）
+   * 如果原始 ≠ 投影，说明 sessionPath 不匹配（会话从 UI 消失但 session-cleaner 仍认为 active）。
+   */
+  logWorkspaceState(label: string): void {
+    try {
+      const file = join(homedir(), '.dsh', 'storages', 'workspace.json')
+      const raw = readFileSync(file, 'utf8')
+      const data = JSON.parse(raw) as { tables?: { workspaces?: Record<string, { path?: string; sessionIds?: string[] }> } }
+      const workspaces = data.tables?.workspaces ?? {}
+      console.log(`[im-gateway] ${label} ── workspace.json raw sessionIds:`)
+      for (const [id, w] of Object.entries(workspaces)) {
+        console.log(`[im-gateway]   "${w.path}" → ${JSON.stringify(w.sessionIds)}`)
+      }
+    } catch { /* ignore */ }
+
+    try {
+      const workspaceRegistry = this.ctx.get('workspaceRegistry') as
+        | { list(): Array<{ path: string; sessionIds: string[] }> }
+        | undefined
+      if (workspaceRegistry) {
+        const list = workspaceRegistry.list()
+        console.log(`[im-gateway] ${label} ── workspaceRegistry.list() projected sessionIds:`)
+        for (const ws of list) {
+          console.log(`[im-gateway]   "${ws.path}" → ${JSON.stringify(ws.sessionIds)}`)
+        }
+      }
+    } catch { /* ignore */ }
+
+    try {
+      const sessions = this.ctx.get('sessions') as
+        | { list(): Array<{ id: SessionId; header?: { cwd?: string } }> }
+        | undefined
+      if (sessions) {
+        const live = sessions.list()
+        console.log(`[im-gateway] ${label} ── live sessions (${live.length}):`)
+        for (const s of live) {
+          console.log(`[im-gateway]   ${s.id} cwd="${s.header?.cwd ?? '?'}"`)
+        }
+      }
+    } catch { /* ignore */ }
   }
 
   /**
@@ -451,7 +744,7 @@ export class ImGatewayService extends Service implements ImGateway {
     const agent = this.ctx.agents.get(sessionId)
     if (!agent) {
       this.ctx.logger.warn(`[im-gateway] no agent for session ${sessionId}`)
-      await channel.sendText(convId, '⚠️ 会话未就绪，请稍后重试。')
+      await channel.sendText(convId, this.t.t('gw.session.notReady'))
       return
     }
     const userMessage: UserMessage = createUserMessage({ content: parts, source: { kind: 'user' } })
@@ -461,355 +754,313 @@ export class ImGatewayService extends Service implements ImGateway {
       agent.followup(userMessage)
     } catch (err) {
       this.ctx.logger.error(`[im-gateway] followup failed for ${convKey}`, err)
-      await channel.sendText(convId, '⚠️ 处理失败，请稍后重试。')
+      await channel.sendText(convId, this.t.t('gw.followup.failed'))
     }
   }
 
-  // ── agent event → channel reply (ctx.on('session/event')) ──────────────
+  /** 清理指定会话的事件状态（CommandHandler /reset 调用）。 */
+  clearConversationState(convId: string): void {
+    this.eventDispatcher?.disposeConversation(convId)
+  }
 
-  private onSessionEvent(session: Session, event: SessionEvent): void {
-    const convKey = this.sessionToConv.get(String(session.id))
-    if (!convKey) return // not one of our IM sessions
-    const channel = this.channelForConv(convKey)
-    if (!channel) return
-    const convId = convOf(convKey)
-
-    switch (event.type) {
-      case 'turn/start': {
-        // Reset per-turn accumulators. The streaming channel is NOT opened
-        // here — dsh fires turn/start when the agent STARTS processing the
-        // user message (before any assistant output). Opening a server-side
-        // StreamSession at this point would leave the QQ client on
-        // "连接中" while the agent is still thinking. Mirrors the reference
-        // project: beginStream happens on the first assistant text (below).
-        this.finalText.set(convId, '')
-        this.streamStarted.delete(convId)
-        break
-      }
-      case 'assistant/chunk': {
-        // StreamChunk union; only text-delta carries incremental text.
-        const chunk = event.data.chunk
-        if (chunk.type === 'text-delta') {
-          // Assistant is actually producing text NOW → open the streaming
-          // channel on the first delta (reference: message_start + dedupe).
-          if (channel.beginStream && !this.streamStarted.get(convId)) {
-            this.streamStarted.set(convId, true)
-            void channel.beginStream(convId).catch((err) => {
-              this.ctx.logger.warn(`[im-gateway] beginStream failed: ${err instanceof Error ? err.message : String(err)}`)
-            })
-          }
-          this.finalText.set(convId, (this.finalText.get(convId) ?? '') + chunk.text)
-          this.streamToChannel(channel, convId, chunk.text)
-        }
-        break
-      }
-      case 'tool/call': {
-        const name = (event.data as { name?: string }).name ?? '未知工具'
-        if (channel.streamText) {
-          // Streaming channels: overwrite the card with the tool-call note —
-          // the next text-delta replaces it with the real reply (reference
-          // behavior: "show tool, then reply").
-          void channel.streamText(convId, `🔧 正在调用工具：${name} …`).catch(() => undefined)
-        } else {
-          void channel.sendText(convId, `🔧 ${name} …`)
-        }
-        break
-      }
-      case 'assistant/message': {
-        // Authoritative final text for the step (more reliable than folding chunks).
-        this.finalText.set(convId, extractText(event.data.message.content))
-        break
-      }
-      case 'turn/end': {
-        this.flushStream(channel, convId)
-        const full = this.finalText.get(convId) ?? ''
-        if (channel.endStream) {
-          // Streaming channels: finalize the card. ALWAYS call endStream even
-          // with no text (pure tool-call replies) so the card closes instead
-          // of hanging in "inputing". The adapter falls back to sendText if
-          // its card was never created.
-          void channel
-            .endStream(convId, full || '✅ 已完成（无文本输出）')
-            .catch((err) => {
-              this.ctx.logger.warn(`[im-gateway] endStream failed: ${err instanceof Error ? err.message : String(err)}`)
-              // Never lose the reply: plain-text fallback.
-              if (full) void channel.sendText(convId, full).catch(() => undefined)
-            })
-        } else if (!channel.updateCard) {
-          if (full) {
-            void channel.sendText(convId, full)
-          } else {
-            // No assistant output: surface the failure to the user instead of
-            // staying silent (e.g. model not configured → {{model}} unbound).
-            const reason = (event.data as { reason?: { kind?: string; error?: { message?: string } } })?.reason
-            if (reason?.kind === 'error') {
-              const detail = typeof reason.error?.message === 'string' ? reason.error.message : '未知错误'
-              void channel.sendText(convId, `⚠️ 处理失败：${detail.slice(0, 200)}`)
-            }
-          }
-        }
-        break
-      }
-      default:
-        break
+  /**
+   * 从 dsh 全局设置读取界面语言（locale.preference）。
+   * 与「设置 → 通用设置 → 语言」联动；settings 不可用时回退中文。
+   */
+  private resolveLang(): 'zh' | 'en' {
+    try {
+      const settings = this.ctx.get('settings') as
+        | { get(ns: unknown): { preference?: string } | undefined }
+        | undefined
+      if (!settings) return 'zh'
+      const section = settings.get(settingsNamespace('locale'))
+      const pref = section?.preference
+      return pref === 'en' ? 'en' : 'zh'
+    } catch {
+      return 'zh'
     }
   }
 
-  // ── streaming throttle (card channels) ─────────────────────────────────
+  // ── im_send_file 工具 ────────────────────────────────────────────────
 
-  private streamToChannel(channel: ImChannelAdapter, convId: string, delta: string): void {
-    if (!channel.streamText && !channel.updateCard) return // no streaming support → rely on turn/end sendText
-    const entry = this.pendingStream.get(convId) ?? { text: '' }
-    entry.text += delta
-    if (!entry.timer) {
-      entry.timer = setTimeout(() => this.flushStream(channel, convId), this.config.streamThrottleMs)
-    }
-    this.pendingStream.set(convId, entry)
-  }
-
-  private flushStream(channel: ImChannelAdapter, convId: string): void {
-    const entry = this.pendingStream.get(convId)
-    if (!entry) return
-    const text = entry.text
-    entry.text = ''
-    entry.timer = undefined
-    this.pendingStream.set(convId, entry)
-    if (!text) return
-    // Prefer the full streaming lifecycle (streamText), fall back to the
-    // legacy one-shot updateCard for channels that only implement that.
-    if (channel.streamText) void channel.streamText(convId, text)
-    else void channel.updateCard?.(convId, text)
-  }
-
-  // ── slash commands ─────────────────────────────────────────────────────
-
-  private async handleSlash(channel: ImChannelAdapter, message: ImInboundMessage): Promise<boolean> {
-    const parts = message.text.slice(1).split(/\s+/)
-    const cmd = parts[0]
-    const arg = parts.slice(1).join(' ').trim()
-    const convKey = `${message.channelId}:${message.conversationId}`
-    const convId = convOf(convKey)
-    switch (cmd) {
-      case 'help':
-        // DingTalk's `markdown` msgtype collapses bare `\n` — only markdown
-        // structure (list / blockquote / heading) yields a new line. Render
-        // every command as a `- ` list item so each lands on its own row.
-        await channel.sendText(
-          convId,
-          [
-            '**可用指令**',
-            '',
-            '- `/help` — 显示本帮助',
-            '- `/reset` · `/clear` · `/new` — 重置当前会话（开启新一轮）',
-            '- `/model` — 列出可用模型；`/model <编号|模型名|provider/model>` 切换',
-            '- `/status` — 查看当前渠道、工作目录与模型',
-            '- `/stop` — 中止当前正在生成的回答',
-          ].join('\n'),
-        )
-        return true
-      case 'reset':
-      case 'clear':
-      case 'new': {
-        const sessionId = this.convToSession.get(convKey)
-        // dispose the agent + drop our mapping so the next message starts fresh.
-        if (sessionId) {
-          await this.agentHandles.get(sessionId)?.dispose().catch(() => undefined)
-          this.agentHandles.delete(sessionId)
-          this.modelRefs.delete(sessionId)
-          this.modelOverrides.delete(sessionId)
-          this.sessionToConv.delete(sessionId)
-          this.convToSession.delete(convKey)
-        }
-        this.finalText.delete(convId)
-        await channel.sendText(convId, '✅ 会话已重置，下一句将开启新一轮。')
-        return true
-      }
-      case 'model':
-        await this.handleModelCommand(channel, convKey, convId, arg)
-        return true
-      case 'status':
-        await this.handleStatusCommand(channel, convKey, convId, message)
-        return true
-      case 'stop':
-        await this.handleStopCommand(channel, convKey, convId)
-        return true
-      default:
-        return false // not a known command → forward to the agent
-    }
-  }
-
-  // ── /model ────────────────────────────────────────────────────────────
-
-  private async handleModelCommand(
-    channel: ImChannelAdapter,
-    convKey: string,
-    convId: string,
-    arg: string,
-  ): Promise<void> {
-    const sessionId = this.convToSession.get(convKey)
-    const models = await this.listAvailableModels()
-    if (models.length === 0) {
-      await channel.sendText(convId, '⚠️ 暂无可用的模型（未配置 provider）。')
-      return
-    }
-    // 列目录不需要 session：先选好"当前"按 session override → global override → defaults 的优先级，
-    // 这样用户即使还没发过消息，也能看到当前默认是啥。
-    if (!arg) {
-      const current =
-        (sessionId ? this.modelOverrides.get(sessionId) : undefined) ??
-        this.globalModelOverride ??
-        this.ctx.get('agentDefaultModel')?.currentSelection()
-      // Markdown list (each line `- …`) → one row per model on DingTalk.
-      // DingTalk's markdown renderer resets ASCII numbers (`- 1.`, `- 2.`)
-      // to a uniform value when they appear inside list items, so we use
-      // emoji numerals (`1️⃣`, `2️⃣`, …) for unambiguous selection by /model.
-      const NUM_EMOJI = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟'] as const
-      const lines = models.map((m, i) => {
-        const isCur = current && current.provider === m.provider && current.model === m.model
-        const label = m.name && m.name !== m.model ? `${m.model}（${m.name}）` : m.model
-        const num = NUM_EMOJI[i] ?? `${i + 1}.`
-        return `- ${num} ${label} \`[${m.provider}]\`${isCur ? ' ← 当前' : ''}`
-      })
-      await channel.sendText(
-        convId,
-        [
-          '**可用模型**（输入 `/model <emoji|模型名|provider/model>` 切换——emoji 即列表左侧的 1️⃣2️⃣ 等；无会话时切换将设为默认模型，下次建立会话生效）',
-          '',
-          ...lines,
-        ].join('\n'),
-      )
-      return
-    }
-    const target = this.resolveModelArg(arg, models)
-    if (!target) {
-      await channel.sendText(convId, `⚠️ 未找到模型「${arg}」。输入 /model 查看可用列表。`)
-      return
-    }
-    // 无会话：写到 globalModelOverride，等会话建立时自动套用。
-    if (!sessionId) {
-      this.globalModelOverride = { provider: target.provider, model: target.model }
-      await channel.sendText(
-        convId,
-        `✅ 已设置默认模型：\`${target.model}\` [\`${target.provider}\`]（下次建立会话时生效，下一次发送消息后立即应用）`,
-      )
-      return
-    }
-    // 有会话：写到会话级 override，并刷新该会话的 ref 让下一句立即生效。
-    this.modelOverrides.set(sessionId, { provider: target.provider, model: target.model })
-    const ref = this.modelRefs.get(sessionId)
-    if (ref) {
-      ;(ref as { current: ModelSelection | undefined }).current = { provider: target.provider, model: target.model }
-    }
-    await channel.sendText(convId, `✅ 已切换模型：\`${target.model}\` [\`${target.provider}\`]（下一句生效）`)
-  }
-
-  /** Build the provider/model catalog from the host llm registry. */
-  private async listAvailableModels(): Promise<Array<{ provider: string; model: string; name: string }>> {
-    const llm = this.ctx.get('llm') as
+  /** 注册 im_send_file 工具：agent 把工作区文件发给当前 IM 会话的用户。 */
+  private registerSendFileTool(): void {
+    const tools = this.ctx.get('tools') as
       | {
-          // NOTE: `listProviders` is SYNC in @deepseek-ai/dsh-llm (returns an
-          // array, see LlmRuntime.listProviders) — do NOT `.catch()` it, an
-          // array has no such method and the TypeError kills the whole slash
-          // command silently. `listModels` is async.
-          listProviders(): Array<{ id: string; name: string }>
-          listModels(p: string): Promise<Array<{ id: string; name?: string }>>
-          resolveModelInfo?(p: string, m: string): Promise<unknown>
+          register(def: {
+            name: string
+            description: string
+            parameters: Record<string, unknown>
+            output: {
+              schema: Record<string, unknown>
+              render: (args: unknown, value: unknown) => unknown[]
+            }
+            execute: (args: unknown, exec: { agent?: { id: SessionId } }) => Promise<unknown>
+          }): () => void
         }
       | undefined
-    if (!llm?.listProviders) return []
-    const out: Array<{ provider: string; model: string; name: string }> = []
-    let providers: Array<{ id: string; name: string }> = []
+    if (!tools?.register) return
     try {
-      providers = llm.listProviders() ?? []
+      const disposer = tools.register({
+        name: 'im_send_file',
+        description:
+          this.t.t('gw.sendFile.desc1') +
+          this.t.t('gw.sendFile.desc2'),
+        parameters: {
+          type: 'object',
+          properties: {
+            path: { type: 'string', description: this.t.t('gw.sendFile.pathDesc') },
+            caption: { type: 'string', description: this.t.t('gw.sendFile.captionDesc') },
+          },
+          required: ['path'],
+        },
+        output: {
+          schema: {
+            type: 'object',
+            properties: {
+              ok: { type: 'boolean' },
+              detail: { type: 'string' },
+            },
+            required: ['ok', 'detail'],
+          },
+          render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
+        },
+        execute: async (args, exec) => {
+          const { path, caption } = args as { path: string; caption?: string }
+          const sessionId = exec.agent?.id
+          return this.sendFileToChat(path, caption, sessionId ? String(sessionId) : undefined)
+        },
+      })
+      this.disposeTools.push(disposer)
     } catch (err) {
-      this.ctx.logger.warn(`[im-gateway] listProviders failed: ${err instanceof Error ? err.message : String(err)}`)
-      return []
+      this.ctx.logger.warn(`[im-gateway] im_send_file 工具注册失败: ${err instanceof Error ? err.message : String(err)}`)
     }
-    for (const p of providers) {
-      let models: Array<{ id: string; name?: string }> = []
-      try {
-        models = await llm.listModels(p.id)
-      } catch (err) {
-        this.ctx.logger.warn(`[im-gateway] listModels("${p.id}") failed: ${err instanceof Error ? err.message : String(err)}`)
-        continue
+  }
+
+  /** 把文件发送到会话关联的渠道（im_send_file 工具的执行体）。 */
+  async sendFileToChat(
+    filePath: string,
+    caption?: string,
+    sessionId?: string,
+  ): Promise<{ ok: boolean; detail: string }> {
+    if (!sessionId) {
+      return { ok: false, detail: this.t.t('gw.sendFile.noSession') }
+    }
+    const convKey = this.sessionToConv.get(sessionId)
+    if (!convKey) {
+      return { ok: false, detail: this.t.t('gw.sendFile.noChat') }
+    }
+    const channel = this.channelForConv(convKey)
+    if (!channel) {
+      return { ok: false, detail: this.t.t('gw.sendFile.noChannel') }
+    }
+    const convId = convOf(convKey)
+    try {
+      if (caption) await channel.sendText(convId, caption).catch(() => undefined)
+      if (channel.sendMedia) {
+        await channel.sendMedia(convId, filePath, caption)
+        return { ok: true, detail: this.t.t('gw.sendFile.sent', filePath) }
       }
-      for (const m of models) out.push({ provider: p.id, model: m.id, name: m.name ?? m.id })
-    }
-    return out
-  }
-
-  /** Resolve a /model argument (index | model id | partial | provider/model) to a catalog entry. */
-  private resolveModelArg(
-    arg: string,
-    models: Array<{ provider: string; model: string; name: string }>,
-  ): { provider: string; model: string } | undefined {
-    const byIndex = arg.match(/^(\d+)$/)
-    if (byIndex) {
-      const idx = Number(byIndex[1]) - 1
-      return models[idx]
-    }
-    if (arg.includes('/')) {
-      const [provider, ...rest] = arg.split('/')
-      const model = rest.join('/')
-      return models.find((m) => m.provider === provider && m.model === model)
-    }
-    // exact model id, then case-insensitive partial match
-    return (
-      models.find((m) => m.model === arg) ??
-      models.find((m) => m.model.toLowerCase() === arg.toLowerCase()) ??
-      models.find((m) => m.model.toLowerCase().includes(arg.toLowerCase()))
-    )
-  }
-
-  // ── /status ──────────────────────────────────────────────────────────
-
-  private async handleStatusCommand(
-    channel: ImChannelAdapter,
-    convKey: string,
-    convId: string,
-    message: ImInboundMessage,
-  ): Promise<void> {
-    const sessionId = this.convToSession.get(convKey)
-    const sessionOverride = sessionId ? this.modelOverrides.get(sessionId) : undefined
-    const sel = sessionOverride ?? this.globalModelOverride ?? this.ctx.get('agentDefaultModel')?.currentSelection()
-    const handle = sessionId ? this.agentHandles.get(sessionId) : undefined
-    const lines = ['**当前状态**', '']
-    lines.push(
-      `- 📡 渠道：\`${message.channelId}\``,
-      `- 📁 工作目录：\`${this.config.cwd}\``,
-      `- 🤖 当前模型：${sel ? `\`${sel.provider} / ${sel.model}\`` : '未知'}`,
-      `- 💬 会话：${sessionId ? '已建立' : '未建立'}`,
-    )
-    if (this.globalModelOverride && !sessionOverride) {
-      lines.push(`- 🌐 全局默认模型（预选）：\`${this.globalModelOverride.provider} / ${this.globalModelOverride.model}\``)
-    }
-    if (handle) lines.push(`- ⚙️ 运行状态：\`${handle.agent.status}\``)
-    await channel.sendText(convId, lines.join('\n'))
-  }
-
-  // ── /stop ────────────────────────────────────────────────────────────
-
-  private async handleStopCommand(
-    channel: ImChannelAdapter,
-    convKey: string,
-    convId: string,
-  ): Promise<void> {
-    const sessionId = this.convToSession.get(convKey)
-    const handle = sessionId ? this.agentHandles.get(sessionId) : undefined
-    if (!handle) {
-      await channel.sendText(convId, '⚠️ 当前没有进行中的会话。')
-      return
-    }
-    try {
-      // Same call the official session.cancel RPC makes. keepInbox preserves any
-      // queued follow-up so a later message still works.
-      handle.agent.cancel({ kind: 'user' }, { keepInbox: true })
-      await channel.sendText(convId, '🛑 已中止当前轮次。')
+      // 渠道不支持发送文件 → 降级为文本说明
+      await channel.sendText(convId, this.t.t('gw.sendFile.fallbackText', filePath))
+      return { ok: true, detail: this.t.t('gw.sendFile.fallbackDetail', filePath) }
     } catch (err) {
-      this.ctx.logger.error(`[im-gateway] /stop failed for ${convKey}`, err)
-      await channel.sendText(convId, '⚠️ 中止失败，请稍后重试。')
+      const detail = err instanceof Error ? err.message : String(err)
+      return { ok: false, detail: this.t.t('gw.sendFile.failed', detail) }
     }
   }
+
+  // ── 审批桥 ────────────────────────────────────────────────────────────
+
+  /**
+   * 处理 approval/request 事件：把审批请求推送到绑定该会话的 IM chat，
+   * 等待用户回复「批准/拒绝」。超时或无绑定 chat 时委托回下游（next()）。
+   */
+  private async handleApprovalRequest(
+    req: { agent: { session: { id: string } }; toolName: string; reason?: string; signal?: AbortSignal },
+    next: () => Promise<ApprovalOutcome>,
+  ): Promise<ApprovalOutcome> {
+    const sessionId = String(req.agent.session.id)
+    const convKey = this.sessionToConv.get(sessionId)
+    if (!convKey) return next() // 非 IM 会话 → 委托下游
+    const channel = this.channelForConv(convKey)
+    if (!channel) return next()
+    const convId = convOf(convKey)
+    const timeoutMs = this.config.approvalTimeoutSecs * 1000
+    const text = [
+      this.t.t('gw.approval.title', this.config.approvalTimeoutSecs),
+      this.t.t('gw.approval.tool', req.toolName),
+      req.reason ? this.t.t('gw.approval.reason', req.reason) : '',
+      this.t.t('gw.approval.hint'),
+    ].filter(Boolean).join('\n')
+
+    await channel.sendText(convId, text).catch(() => undefined)
+    const verdict = await this.approvalBroker.wait(sessionId, timeoutMs, req.signal)
+    if (verdict === 'allow') return 'allowed-once'
+    if (verdict === 'reject') return 'rejected'
+    return next()
+  }
+
+  /** IM 侧答复审批。有 pending 则消费并回复确认，无 pending 返回 false。 */
+  private async answerApproval(channel: ImChannelAdapter, message: ImInboundMessage, allow: boolean): Promise<boolean> {
+    const convKey = `${message.channelId}:${message.conversationId}`
+    const sessionId = this.convToSession.get(convKey)
+    if (!sessionId) return false
+    const answered = this.approvalBroker.answer(String(sessionId), allow)
+    if (answered) {
+      const convId = convOf(convKey)
+      await channel.sendText(convId, allow ? this.t.t('gw.approval.approved') : this.t.t('gw.approval.rejected')).catch(() => undefined)
+    }
+    return answered
+  }
+
+  // ── 提问桥 ────────────────────────────────────────────────────────────
+
+  /**
+   * 包装 ctx.userQuestions.ask：当 agent 提问时，把问题推送到绑定该会话的 IM chat，
+   * 与 Web 端竞速，第一答生效。无绑定 IM 会话时委托回原始 ask。
+   */
+  private installQuestionBridge(): void {
+    const service = this.ctx.get('userQuestions') as
+      | { ask(request: AskUserQuestionRequest): Promise<AskUserQuestionAnswer> }
+      | undefined
+    if (!service?.ask) return
+
+    const originalAsk = service.ask.bind(service)
+    const gateway = this
+
+    const wrappedAsk = async (request: AskUserQuestionRequest): Promise<AskUserQuestionAnswer> => {
+      const sessionId = request.agent ? String(request.agent.session.id) : ''
+      const convKey = sessionId ? gateway.sessionToConv.get(sessionId) : undefined
+      if (!sessionId || !convKey) return originalAsk(request)
+
+      const channel = gateway.channelForConv(convKey)
+      if (!channel) return originalAsk(request)
+
+      const convId = convOf(convKey)
+      const timeoutSecs = Math.max(1, gateway.config.questionTimeoutSecs)
+      const timeoutMs = timeoutSecs * 1000
+      const webAbort = new AbortController()
+      const forwardAbort = () => webAbort.abort(request.signal?.reason)
+      request.signal?.addEventListener('abort', forwardAbort, { once: true })
+
+      const imWait = gateway.questionBroker.wait(sessionId, request.questions, timeoutMs, request.signal)
+      await channel
+        .sendText(convId, formatQuestionPrompt(request.questions, timeoutSecs, this.t))
+        .catch(() => undefined)
+      gateway.ctx.logger.info(`[im-gateway] 提问已同步到 ${convKey}（${request.questions.length} 个问题）`)
+
+      const webWait = originalAsk({ ...request, signal: webAbort.signal }).then(
+        (answer) => ({ kind: 'web' as const, answer }),
+        (error: unknown) => ({ kind: 'web-error' as const, error }),
+      )
+
+      const finishWeb = async (): Promise<AskUserQuestionAnswer> => {
+        const web = await webWait
+        if (web.kind === 'web-error') throw web.error
+        gateway.questionBroker.finishFromWeb(sessionId, web.answer)
+        await channel
+          .sendText(convId, this.t.t('gw.question.answeredWeb', formatAnswerSummary(request.questions, web.answer)))
+          .catch(() => undefined)
+        return web.answer
+      }
+
+      try {
+        const first = await Promise.race([webWait, imWait])
+        if (first.kind === 'web') {
+          gateway.questionBroker.finishFromWeb(sessionId, first.answer)
+          await channel
+            .sendText(convId, this.t.t('gw.question.answeredWeb', formatAnswerSummary(request.questions, first.answer)))
+            .catch(() => undefined)
+          return first.answer
+        }
+        if (first.kind === 'web-error') {
+          gateway.questionBroker.cancel(sessionId)
+          throw first.error
+        }
+        if (first.kind === 'answered') {
+          webAbort.abort()
+          void webWait
+          await channel
+            .sendText(
+              convId,
+              this.t.t('gw.question.answeredIM', formatAnswerSummary(request.questions, first.answer), first.source.label ?? first.source.channelId),
+            )
+            .catch(() => undefined)
+          return first.answer
+        }
+        if (first.kind === 'external') return first.answer
+        if (first.kind === 'timeout') {
+          await channel.sendText(convId, this.t.t('gw.question.timeout')).catch(() => undefined)
+        }
+        // cancelled / busy / timeout：Web provider 仍是最终兜底
+        return finishWeb()
+      } finally {
+        request.signal?.removeEventListener('abort', forwardAbort)
+      }
+    }
+
+    service.ask = wrappedAsk
+    this.restoreUserQuestionsAsk = () => {
+      if (service.ask === wrappedAsk) service.ask = originalAsk
+    }
+  }
+
+  /** IM 侧答复提问。有 pending 则尝试解析，成功/无效/已答过都消费（不转发 agent）。 */
+  private async answerQuestion(channel: ImChannelAdapter, message: ImInboundMessage): Promise<boolean> {
+    const convKey = `${message.channelId}:${message.conversationId}`
+    const sessionId = this.convToSession.get(convKey)
+    if (!sessionId) return false
+    const sid = String(sessionId)
+    const questions = this.questionBroker.questionsFor(sid)
+    const result = this.questionBroker.answer(sid, message.text, {
+      channelId: message.channelId,
+      conversationId: message.conversationId,
+      label: channel.label,
+    })
+    if (result.kind === 'not-pending') return false
+    const convId = convOf(convKey)
+    if (result.kind === 'invalid') {
+      await channel.sendText(convId, this.t.t('gw.question.invalid', result.message)).catch(() => undefined)
+      return true
+    }
+    if (result.kind === 'already-answered') {
+      await channel.sendText(convId, `ℹ️ ${result.message}`).catch(() => undefined)
+      return true
+    }
+    if (questions) {
+      this.ctx.logger.info(`[im-gateway] 提问由 ${convKey} 回答：${formatAnswerSummary(questions, result.answer)}`)
+    }
+    return true
+  }
+
+  // ── 白名单 ────────────────────────────────────────────────────────────
+
+  /** 检查用户是否在白名单中。渠道本地授权优先，其次全局白名单和 UI 批准。 */
+  private authorized(channelId: string, userId?: string): boolean {
+    if (this.config.allowAllUsers) return true
+    if (!userId) return false
+    const perChannel = this.config.allowedUserIds[channelId]
+    if (perChannel && perChannel.includes(userId)) return true
+    // 扁平兜底：keys 为 '*' 时按全局名单
+    const global = this.config.allowedUserIds['*']
+    if (global && global.includes(userId)) return true
+    // UI 批准的渠道白名单
+    const extra = this.extraAllowlist.get(channelId)
+    if (extra && extra.has(userId)) return true
+    return false
+  }
+
+  /** 添加 UI 批准的白名单用户（manager 同步调用；重启后需重新灌入）。 */
+  addAuthorizedUser(channelId: string, userId: string): void {
+    let set = this.extraAllowlist.get(channelId)
+    if (!set) {
+      set = new Set()
+      this.extraAllowlist.set(channelId, set)
+    }
+    set.add(userId)
+  }
+
 
   // ── helpers ────────────────────────────────────────────────────────────
 
@@ -845,13 +1096,6 @@ function toContentBlocks(message: ImInboundMessage): ContentBlock[] {
   return blocks
 }
 
-/** Extract plain text from an assistant message's content blocks. */
-function extractText(content: ContentBlock[]): string {
-  return content
-    .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
-    .map((b) => b.text)
-    .join('')
-}
 
 /**
  * Whether an error is a session-persistence id collision. The persistence

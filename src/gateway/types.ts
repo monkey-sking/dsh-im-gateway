@@ -52,6 +52,8 @@ export interface ImChannelAdapter {
   readonly id: string
   /** Human-readable label for logs / settings UI. */
   readonly label: string
+  /** 单条消息最大字符数（超过则分片发送）。0 = 不分片。默认 4000。 */
+  readonly maxMessageChars?: number
   /** Connect to the backend (open WS / start polling). */
   start(): Promise<void> | void
   /** Disconnect and release resources. */
@@ -60,6 +62,8 @@ export interface ImChannelAdapter {
   sendText(conversationId: string, text: string): Promise<void>
   /** Push an image reply. Optional — channels without media support may omit. */
   sendImage?(conversationId: string, image: ImImage): Promise<void>
+  /** Push a file/media reply. Optional — channels without file support may omit. */
+  sendMedia?(conversationId: string, filePath: string, caption?: string): Promise<void>
   /** Whether the adapter is currently connected. */
   isActive(): boolean
   /**
@@ -86,6 +90,12 @@ export interface ImChannelAdapter {
    * (e.g. the message was a slash command handled locally).
    */
   onInbound?(message: ImInboundMessage): boolean | Promise<boolean>
+  /**
+   * Optional channel-local authorization. Return `true` → authorized,
+   * `false` → rejected, `undefined` → defer to the gateway global allowlist.
+   * Used by channels with their own auth (e.g. Weixin QR-scan users).
+   */
+  authorizes?(userId: string): boolean | undefined
   /**
    * Optional status sink. The gateway assigns this on registration; the adapter
    * must call it whenever its connection state changes (connected / closed /
@@ -152,6 +162,23 @@ export interface ImGatewayConfig {
   streamThrottleMs: number
   /** Enable built-in slash commands (/help, /reset, /clear). */
   slashCommands: boolean
+  /**
+   * 审批超时（秒）。当 agent 调用需要审批的工具时，IM 侧需在此时间内
+   * 回复「批准」或「拒绝」，超时则委托回 dsh 原生审批体系。
+   */
+  approvalTimeoutSecs: number
+  /**
+   * 提问超时（秒）。当 agent 调用 ask_user_question 工具时，IM 侧需在此时间内
+   * 回复，超时则转回 Web 端继续等待。
+   */
+  questionTimeoutSecs: number
+  /** 全局放行所有用户（仅开发用）。 */
+  allowAllUsers: boolean
+  /** 白名单：{ channelId: string[] } 或用 '*' 作 key 匹配任意渠道。 */
+  allowedUserIds: Record<string, string[]>
+  /** 多段输入合并窗口（秒）。用户连续发多条消息时合并为一条。 */
+  mergeTimeoutSecs: number
+
   /** All channel instances. Only `enabled` ones connect out. Empty by default. */
   channels: ImChannelInstance[]
 }
@@ -165,6 +192,8 @@ export interface ImGateway {
   handleInbound(message: ImInboundMessage): Promise<void>
   /** Snapshot of every channel's runtime status (for the settings UI). */
   getChannelStatuses(): Record<string, ChannelStatus>
+  /** 添加 UI 批准的白名单用户（重启后需重新灌入）。 */
+  addAuthorizedUser(channelId: string, userId: string): void
 }
 
 // ─────────────────────────────────────────────────────────────────────────

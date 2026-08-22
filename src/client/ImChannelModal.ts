@@ -78,6 +78,8 @@ export interface ImChannelModalProps {
   instances: ImChannelInstance[]
   /** Config api — used for QR-scan login on qq / weixin types. */
   configApi?: ConfigApi
+  /** Translation function (bound to 'im-gateway' namespace). */
+  t: (key: string, params?: Record<string, unknown>) => string
   onClose: () => void
   onSave: (draft: ChannelDraft) => Promise<void>
 }
@@ -288,7 +290,11 @@ export function mintInstanceId(type: string, existing: ImChannelInstance[]): str
  * @param props - edit target, current instances, close/save actions.
  */
 export function ImChannelModal(props: ImChannelModalProps) {
-  const { editId, instances, configApi, onClose, onSave } = props
+  const { editId, instances, configApi, t, onClose, onSave } = props
+
+  /** Translate a channel type to its display label. */
+  const typeLabel = (tp: string): string =>
+    tp === 'dingtalk' ? t('type.dingtalk') : tp === 'qq' ? t('type.qq') : tp === 'weixin' ? t('type.weixin') : tp
 
   const editing = editId !== undefined ? instances.find((inst) => inst.id === editId) : undefined
   const initialType = (editing?.type ?? 'dingtalk') as string
@@ -363,7 +369,7 @@ export function ImChannelModal(props: ImChannelModalProps) {
     setVerifyCode('')
     const res = await configApi.startQrLogin(type)
     if (!res.ok || !res.status) {
-      setError(res.message ?? '扫码登录启动失败')
+      setError(res.message ?? t('qr.startFailed'))
       return
     }
     setQr(res.status)
@@ -472,8 +478,8 @@ export function ImChannelModal(props: ImChannelModalProps) {
     createElement('div', { style: modal, onClick: (e: React.MouseEvent) => e.stopPropagation() },
       // Header
       createElement('div', { style: modalHeader },
-        createElement('h3', { style: modalTitle }, editId ? `编辑通道 · ${TYPE_LABELS[editing?.type ?? ''] ?? ''}` : '添加通道'),
-        createElement('button', { style: closeBtn, onClick: onClose, title: '关闭', 'aria-label': '关闭' },
+        createElement('h3', { style: modalTitle }, editId ? t('modal.editTitle', { 0: typeLabel(editing?.type ?? '') }) : t('modal.addTitle')),
+        createElement('button', { style: closeBtn, onClick: onClose, title: t('btn.close'), 'aria-label': t('btn.close') },
           createElement('svg', { width: 16, height: 16, viewBox: '0 0 16 16', fill: 'none', stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round' },
             createElement('path', { d: 'M3 3l10 10M13 3L3 13' }),
           ),
@@ -484,7 +490,7 @@ export function ImChannelModal(props: ImChannelModalProps) {
         // Channel type picker
         createElement('label', { style: field },
           createElement('span', { style: fieldLabel },
-            '渠道类型',
+            t('field.channelType'),
             createElement('span', { style: required }, '*'),
           ),
           createElement('select', {
@@ -493,17 +499,17 @@ export function ImChannelModal(props: ImChannelModalProps) {
             disabled: editId !== undefined,
             onChange: (e: React.ChangeEvent<HTMLSelectElement>) => handleTypeChange(e.target.value),
           },
-            typeOptions.map((ct) => createElement('option', { key: ct, value: ct }, TYPE_LABELS[ct] ?? ct)),
+            typeOptions.map((ct) => createElement('option', { key: ct, value: ct }, typeLabel(ct))),
           ),
         ),
         // Display name
         createElement('label', { style: field },
-          createElement('span', { style: fieldLabel }, '通道名称'),
+          createElement('span', { style: fieldLabel }, t('field.channelName')),
           createElement('input', {
             style: input,
             type: 'text',
             value: name,
-            placeholder: `如：${TYPE_LABELS[type] ?? type}主机器人`,
+            placeholder: t('field.namePlaceholder', { 0: typeLabel(type) }),
             onChange: (e: React.ChangeEvent<HTMLInputElement>) => { setName(e.target.value); setError('') },
           }),
         ),
@@ -525,14 +531,14 @@ export function ImChannelModal(props: ImChannelModalProps) {
         (type === 'qq' || type === 'weixin') && configApi ? (
           createElement('div', { style: qrBox },
             qr && qr.status === 'confirmed' ? (
-              createElement('p', { style: qrHint }, '✅ 扫码登录成功，凭据已自动填入下方字段，点击「保存」生效。')
+              createElement('p', { style: qrHint }, t('qr.success'))
             ) : qr && qr.qrcodeUrl ? (
               [
-                createElement('img', { key: 'img', src: qr.qrcodeUrl, style: qrImg, alt: '登录二维码' }),
-                createElement('p', { key: 'hint', style: qrHint }, qr.message || (type === 'qq' ? '请用手机 QQ 扫码绑定机器人' : '请用手机微信扫码') + '；若图片无法显示，可点击下方链接扫码'),
+                createElement('img', { key: 'img', src: qr.qrcodeUrl, style: qrImg, alt: t('qr.alt') }),
+                createElement('p', { key: 'hint', style: qrHint }, qr.message || (type === 'qq' ? t('qr.qqHint') : t('qr.weixinHint')) + t('qr.fallback')),
                 createElement('div', { key: 'row', style: qrRow },
                   qr.qrcode ? createElement('a', { style: qrLink, href: qr.qrcode, target: '_blank', rel: 'noreferrer' }, qr.qrcode.slice(0, 60)) : null,
-                  createElement('button', { style: btnGhost, onClick: () => void handleCancelQrLogin() }, '取消'),
+                  createElement('button', { style: btnGhost, onClick: () => void handleCancelQrLogin() }, t('btn.cancel')),
                 ),
                 // WeChat pairing-code flow.
                 qr.verifyCodeNeeded || qr.status === 'need_verifycode' ? (
@@ -541,24 +547,24 @@ export function ImChannelModal(props: ImChannelModalProps) {
                       style: { ...input, width: 140, height: 32 },
                       type: 'text',
                       value: verifyCode,
-                      placeholder: '输入配对码',
+                      placeholder: t('qr.verifyPlaceholder'),
                       onChange: (e: React.ChangeEvent<HTMLInputElement>) => setVerifyCode(e.target.value),
                     }),
-                    createElement('button', { style: btnPrimary, onClick: () => void handleSubmitVerifyCode(), disabled: !verifyCode.trim() }, '确认'),
+                    createElement('button', { style: btnPrimary, onClick: () => void handleSubmitVerifyCode(), disabled: !verifyCode.trim() }, t('btn.confirm')),
                   )
                 ) : null,
               ]
             ) : (
               [
                 createElement('p', { key: 'hint', style: qrHint }, qr?.message || (hasCredentials
-                  ? (type === 'qq' ? '已绑定机器人凭据（AppID 已自动填入）。如需更换，重新扫码即可。' : '已绑定微信凭据。如需更换，重新扫码即可。')
-                  : (type === 'qq' ? '尚未配置机器人凭据？扫码绑定，免去在 QQ 开放平台手动创建' : '尚未绑定微信？扫码连接个人微信账号'))),
+                  ? (type === 'qq' ? t('qr.bound.qq') : t('qr.bound.weixin'))
+                  : (type === 'qq' ? t('qr.unbound.qq') : t('qr.unbound.weixin')))),
                 createElement('button', {
                   key: 'start',
                   style: btnGhost,
                   onClick: () => void handleStartQrLogin(),
                   disabled: qrPolling,
-                }, qrPolling ? '获取二维码中…' : `扫码登录（${TYPE_LABELS[type] ?? type}）`),
+                }, qrPolling ? t('qr.fetching') : t('qr.scanLogin', { 0: typeLabel(type) })),
               ]
             ),
           )
@@ -567,9 +573,9 @@ export function ImChannelModal(props: ImChannelModalProps) {
       ),
       // Footer
       createElement('div', { style: footer },
-        createElement('button', { style: btnGhost, onClick: onClose }, '取消'),
+        createElement('button', { style: btnGhost, onClick: onClose }, t('btn.cancel')),
         createElement('button', { style: btnPrimary, onClick: () => void handleSave(), disabled: saving || !canSave },
-          saving ? '保存中…' : '保存',
+          saving ? t('btn.saving') : t('btn.save'),
         ),
       ),
     ),

@@ -231,7 +231,7 @@ class ImGatewayApi extends TypertRemoteService {
     try {
       const gateway = this.ctx.get('imGateway') as { stopAll(): Promise<void>; registerChannel(adapter: import('./gateway/types').ImChannelAdapter): void } | undefined
       if (gateway) {
-        await syncChannels(gateway, this.ctx, { cwd: process.cwd(), streamThrottleMs: 800, slashCommands: true, channels: [] })
+        await syncChannels(gateway, this.ctx, { cwd: process.cwd(), streamThrottleMs: 800, slashCommands: true, approvalTimeoutSecs: 120, questionTimeoutSecs: 600, allowAllUsers: false, allowedUserIds: {}, mergeTimeoutSecs: 3, channels: [] })
       }
     } catch (err) {
       this.ctx.logger.error('[im-gateway] channel reload after save failed', err)
