@@ -16,6 +16,7 @@
  * (inline styles), no lucide icons (inline SVG), platform modules only.
  */
 import { createElement, useEffect, useMemo, useRef, useState } from 'react'
+import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { ConfigApi, QrLoginStatus } from './config-api.ts'
 
 /** The single settings namespace owning every channel config. */
@@ -93,7 +94,7 @@ const overlay: React.CSSProperties = {
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
-  background: 'rgba(0, 0, 0, 0.5)',
+  background: 'var(--dsw-alias-bg-mask-1)',
   padding: 24,
 }
 
@@ -103,11 +104,11 @@ const modal: React.CSSProperties = {
   width: 520,
   maxWidth: '100%',
   maxHeight: '90vh',
-  background: 'var(--dsw-alias-bg-layer-2, var(--dsw-alias-bg-layer-1, #fff))',
-  border: '1px solid var(--dsw-alias-border-l2, #ddd)',
-  borderRadius: 14,
+  background: 'var(--dsw-alias-bg-layer-3)',
+  border: '1px solid var(--dsw-alias-border-l1)',
+  borderRadius: 12,
   overflow: 'hidden',
-  boxShadow: '0 20px 48px rgba(0,0,0,0.36), 0 4px 12px rgba(0,0,0,0.2)',
+  boxShadow: 'var(--dsw-shadow-lv2)',
 }
 
 const modalHeader: React.CSSProperties = {
@@ -115,7 +116,7 @@ const modalHeader: React.CSSProperties = {
   alignItems: 'center',
   gap: 8,
   padding: '14px 18px',
-  borderBottom: '1px solid var(--dsw-alias-border-l1, #eee)',
+  borderBottom: '1px solid var(--dsw-alias-border-l3)',
   flexShrink: 0,
 }
 
@@ -123,7 +124,7 @@ const modalTitle: React.CSSProperties = {
   flex: 1,
   fontSize: 16,
   fontWeight: 500,
-  color: 'var(--dsw-alias-label-primary, inherit)',
+  color: 'var(--dsw-alias-label-primary)',
   margin: 0,
 }
 
@@ -135,7 +136,7 @@ const closeBtn: React.CSSProperties = {
   height: 28,
   border: 'none',
   background: 'transparent',
-  color: 'var(--dsw-alias-label-tertiary, #888)',
+  color: 'var(--dsw-alias-label-tertiary)',
   cursor: 'pointer',
   borderRadius: 6,
   fontSize: 16,
@@ -159,22 +160,22 @@ const field: React.CSSProperties = {
 
 const fieldLabel: React.CSSProperties = {
   fontSize: 12,
-  color: 'var(--dsw-alias-label-secondary, #555)',
+  color: 'var(--dsw-alias-label-secondary)',
   fontWeight: 500,
 }
 
 const required: React.CSSProperties = {
-  color: 'var(--dsw-alias-state-error-primary, #e24b4a)',
+  color: 'var(--dsw-alias-state-error-primary)',
   marginLeft: 2,
 }
 
 const input: React.CSSProperties = {
   height: 40,
   padding: '0 12px',
-  background: 'var(--dsw-alias-bg-layer-1, transparent)',
-  border: '1px solid var(--dsw-alias-border-l2, #ccc)',
+  background: 'var(--dsw-alias-bg-layer-1)',
+  border: '1px solid var(--dsw-alias-border-l2)',
   borderRadius: 8,
-  color: 'var(--dsw-alias-label-primary, inherit)',
+  color: 'var(--dsw-alias-label-primary)',
   fontSize: 13,
   outline: 'none',
   boxSizing: 'border-box',
@@ -184,9 +185,9 @@ const selectInput: React.CSSProperties = { ...input, cursor: 'pointer' }
 
 const errorStyle: React.CSSProperties = {
   fontSize: 12,
-  color: 'var(--dsw-alias-state-error-primary, #e24b4a)',
+  color: 'var(--dsw-alias-state-error-primary)',
   padding: '8px 12px',
-  background: 'rgba(226, 75, 74, 0.08)',
+  background: 'color-mix(in srgb, var(--dsw-alias-state-error-primary) 8%, transparent)',
   borderRadius: 6,
 }
 
@@ -196,7 +197,7 @@ const footer: React.CSSProperties = {
   justifyContent: 'flex-end',
   gap: 8,
   padding: '14px 18px',
-  borderTop: '1px solid var(--dsw-alias-border-l1, #eee)',
+  borderTop: '1px solid var(--dsw-alias-border-l3)',
   flexShrink: 0,
 }
 
@@ -204,8 +205,8 @@ const btnGhost: React.CSSProperties = {
   height: 36,
   padding: '0 16px',
   background: 'transparent',
-  color: 'var(--dsw-alias-label-secondary, #555)',
-  border: '1px solid var(--dsw-alias-border-l2, #ccc)',
+  color: 'var(--dsw-alias-label-secondary)',
+  border: '1px solid var(--dsw-alias-border-l2)',
   borderRadius: 8,
   cursor: 'pointer',
   fontSize: 13,
@@ -217,8 +218,8 @@ const btnPrimary: React.CSSProperties = {
   gap: 6,
   height: 36,
   padding: '0 18px',
-  background: 'var(--dsw-alias-state-business-primary, #185FA5)',
-  color: '#fff',
+  background: 'var(--dsw-alias-state-business-primary)',
+  color: 'var(--dsw-alias-label-primary-foreground)',
   border: 'none',
   borderRadius: 8,
   cursor: 'pointer',
@@ -234,8 +235,8 @@ const qrBox: React.CSSProperties = {
   alignItems: 'center',
   gap: 10,
   padding: '16px',
-  background: 'var(--dsw-alias-bg-layer-1, rgba(0,0,0,0.02))',
-  border: '1px dashed var(--dsw-alias-border-l3, #ccc)',
+  background: 'var(--dsw-alias-bg-layer-1)',
+  border: '1px dashed var(--dsw-alias-border-l3)',
   borderRadius: 10,
 }
 
@@ -250,7 +251,7 @@ const qrImg: React.CSSProperties = {
 const qrHint: React.CSSProperties = {
   margin: 0,
   fontSize: 12,
-  color: 'var(--dsw-alias-label-secondary, #555)',
+  color: 'var(--dsw-alias-label-secondary)',
   textAlign: 'center',
   lineHeight: 1.5,
   wordBreak: 'break-all',
@@ -266,7 +267,7 @@ const qrRow: React.CSSProperties = {
 
 const qrLink: React.CSSProperties = {
   fontSize: 12,
-  color: 'var(--dsw-alias-state-business-primary, #185FA5)',
+  color: 'var(--dsw-alias-state-business-primary)',
   textDecoration: 'none',
   cursor: 'pointer',
   maxWidth: '100%',
@@ -538,7 +539,7 @@ export function ImChannelModal(props: ImChannelModalProps) {
                 createElement('p', { key: 'hint', style: qrHint }, qr.message || (type === 'qq' ? t('qr.qqHint') : t('qr.weixinHint')) + t('qr.fallback')),
                 createElement('div', { key: 'row', style: qrRow },
                   qr.qrcode ? createElement('a', { style: qrLink, href: qr.qrcode, target: '_blank', rel: 'noreferrer' }, qr.qrcode.slice(0, 60)) : null,
-                  createElement('button', { style: btnGhost, onClick: () => void handleCancelQrLogin() }, t('btn.cancel')),
+                  createElement(Button, { variant: 'ghost', size: 'sm', onClick: () => void handleCancelQrLogin() }, t('btn.cancel')),
                 ),
                 // WeChat pairing-code flow.
                 qr.verifyCodeNeeded || qr.status === 'need_verifycode' ? (
@@ -550,7 +551,7 @@ export function ImChannelModal(props: ImChannelModalProps) {
                       placeholder: t('qr.verifyPlaceholder'),
                       onChange: (e: React.ChangeEvent<HTMLInputElement>) => setVerifyCode(e.target.value),
                     }),
-                    createElement('button', { style: btnPrimary, onClick: () => void handleSubmitVerifyCode(), disabled: !verifyCode.trim() }, t('btn.confirm')),
+                    createElement(Button, { variant: 'primary', size: 'sm', onClick: () => void handleSubmitVerifyCode(), disabled: !verifyCode.trim() }, t('btn.confirm')),
                   )
                 ) : null,
               ]
@@ -559,9 +560,10 @@ export function ImChannelModal(props: ImChannelModalProps) {
                 createElement('p', { key: 'hint', style: qrHint }, qr?.message || (hasCredentials
                   ? (type === 'qq' ? t('qr.bound.qq') : t('qr.bound.weixin'))
                   : (type === 'qq' ? t('qr.unbound.qq') : t('qr.unbound.weixin')))),
-                createElement('button', {
+                createElement(Button, {
                   key: 'start',
-                  style: btnGhost,
+                  variant: 'ghost',
+                  size: 'sm',
                   onClick: () => void handleStartQrLogin(),
                   disabled: qrPolling,
                 }, qrPolling ? t('qr.fetching') : t('qr.scanLogin', { 0: typeLabel(type) })),
@@ -573,8 +575,8 @@ export function ImChannelModal(props: ImChannelModalProps) {
       ),
       // Footer
       createElement('div', { style: footer },
-        createElement('button', { style: btnGhost, onClick: onClose }, t('btn.cancel')),
-        createElement('button', { style: btnPrimary, onClick: () => void handleSave(), disabled: saving || !canSave },
+        createElement(Button, { variant: 'ghost', onClick: onClose }, t('btn.cancel')),
+        createElement(Button, { variant: 'primary', onClick: () => void handleSave(), disabled: saving || !canSave },
           saving ? t('btn.saving') : t('btn.save'),
         ),
       ),

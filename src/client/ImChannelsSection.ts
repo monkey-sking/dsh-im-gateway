@@ -12,6 +12,7 @@
  * (inline styles), no lucide icons (inline SVG), platform modules only.
  */
 import { createElement, useEffect, useState } from 'react'
+import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
 import {
   ImChannelModal,
 
@@ -32,49 +33,49 @@ export interface ImChannelsSectionProps {
 // ── inline styles (ported from pi-desk-top ImPage.module.css) ──
 
 const page: React.CSSProperties = { display: 'flex', flexDirection: 'column', minWidth: 0, width: '100%' }
-const header: React.CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 0', flexShrink: 0, borderBottom: '1px solid var(--dsw-alias-border-l2, #eee)' }
+const header: React.CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 0', flexShrink: 0, borderBottom: '1px solid var(--dsw-alias-border-l2)' }
 const titleRow: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }
-const title: React.CSSProperties = { fontSize: 17, fontWeight: 500, color: 'var(--dsw-alias-label-primary, inherit)', margin: 0, whiteSpace: 'nowrap' }
-const countBadge: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', minWidth: 22, height: 22, padding: '0 7px', borderRadius: 999, background: 'var(--dsw-alias-bg-layer-3, #eee)', color: 'var(--dsw-alias-label-secondary, #555)', fontSize: 11, fontWeight: 500 }
+const title: React.CSSProperties = { fontSize: 17, fontWeight: 500, color: 'var(--dsw-alias-label-primary)', margin: 0, whiteSpace: 'nowrap' }
+const countBadge: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', minWidth: 22, height: 22, padding: '0 7px', borderRadius: 999, background: 'var(--dsw-alias-bg-layer-3)', color: 'var(--dsw-alias-label-secondary)', fontSize: 11, fontWeight: 500 }
 const headerRight: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 8 }
-const addBtn: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 6, height: 32, padding: '0 14px', border: 'none', borderRadius: 8, background: 'var(--dsw-alias-state-business-primary, #185FA5)', color: '#fff', fontSize: 13, fontWeight: 500, cursor: 'pointer' }
+const addBtn: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 6, height: 32, padding: '0 14px', border: 'none', borderRadius: 8, background: 'var(--dsw-alias-state-business-primary)', color: 'var(--dsw-alias-label-primary-foreground)', fontSize: 13, fontWeight: 500, cursor: 'pointer' }
 const body: React.CSSProperties = { flex: 1, overflowY: 'auto', padding: '16px 0 24px', display: 'flex', flexDirection: 'column', gap: 16, maxWidth: 760, width: '100%' }
-const errorStyle: React.CSSProperties = { fontSize: 12, lineHeight: 1.5, color: 'var(--dsw-alias-state-error-primary, #e24b4a)', padding: '10px 14px', background: 'rgba(226,75,74,0.08)', border: '1px solid rgba(226,75,74,0.35)', borderRadius: 8, whiteSpace: 'pre-wrap' }
-const empty: React.CSSProperties = { display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '32px 24px', border: '1px dashed var(--dsw-alias-border-l3, #ccc)', borderRadius: 10, background: 'var(--dsw-alias-bg-layer-1, transparent)', textAlign: 'center' }
-const emptyText: React.CSSProperties = { margin: 0, fontSize: 13, color: 'var(--dsw-alias-label-secondary, #555)' }
+const errorStyle: React.CSSProperties = { fontSize: 12, lineHeight: 1.5, color: 'var(--dsw-alias-state-error-primary)', padding: '10px 14px', background: 'color-mix(in srgb, var(--dsw-alias-state-error-primary) 8%, transparent)', border: '1px solid color-mix(in srgb, var(--dsw-alias-state-error-primary) 40%, transparent)', borderRadius: 8, whiteSpace: 'pre-wrap' }
+const empty: React.CSSProperties = { display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '32px 24px', border: '1px dashed var(--dsw-alias-border-l3)', borderRadius: 10, background: 'var(--dsw-alias-bg-layer-1)', textAlign: 'center' }
+const emptyText: React.CSSProperties = { margin: 0, fontSize: 13, color: 'var(--dsw-alias-label-secondary)' }
 const group: React.CSSProperties = { display: 'flex', flexDirection: 'column', gap: 8 }
 const groupHead: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 8 }
-const groupTitle: React.CSSProperties = { fontSize: 13, fontWeight: 600, color: 'var(--dsw-alias-label-primary, inherit)', margin: 0 }
-const groupCount: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', minWidth: 18, height: 18, padding: '0 6px', borderRadius: 999, background: 'var(--dsw-alias-bg-layer-3, #eee)', color: 'var(--dsw-alias-label-tertiary, #888)', fontSize: 10, fontWeight: 500 }
+const groupTitle: React.CSSProperties = { fontSize: 13, fontWeight: 600, color: 'var(--dsw-alias-label-primary)', margin: 0 }
+const groupCount: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', minWidth: 18, height: 18, padding: '0 6px', borderRadius: 999, background: 'var(--dsw-alias-bg-layer-3)', color: 'var(--dsw-alias-label-tertiary)', fontSize: 10, fontWeight: 500 }
 const channelList: React.CSSProperties = { display: 'flex', flexDirection: 'column', gap: 10 }
-const channelCard: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 14, padding: '14px 16px', background: 'var(--dsw-alias-bg-layer-2, transparent)', border: '1px solid var(--dsw-alias-border-l2, #e0e0e0)', borderRadius: 10 }
-const channelIcon: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 32, height: 32, borderRadius: 8, background: 'var(--dsw-alias-bg-layer-3, #eee)', color: 'var(--dsw-alias-label-secondary, #555)', flexShrink: 0 }
+const channelCard: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 14, padding: '14px 16px', background: 'var(--dsw-alias-bg-layer-2)', border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 10 }
+const channelIcon: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 32, height: 32, borderRadius: 8, background: 'var(--dsw-alias-bg-layer-3)', color: 'var(--dsw-alias-label-secondary)', flexShrink: 0 }
 const channelInfo: React.CSSProperties = { flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 4 }
 const channelNameRow: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }
-const channelName: React.CSSProperties = { fontSize: 13, fontWeight: 500, color: 'var(--dsw-alias-label-primary, inherit)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }
+const channelName: React.CSSProperties = { fontSize: 13, fontWeight: 500, color: 'var(--dsw-alias-label-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }
 const statusDot: React.CSSProperties = { width: 8, height: 8, borderRadius: '50%', flexShrink: 0 }
 
 /** Color for a channel runtime status dot. */
 function statusColor(s?: ChannelStatus): string {
-  if (s?.status === 'online') return 'var(--dsw-alias-state-success-primary, #1D9E75)'
-  if (s?.status === 'error') return 'var(--dsw-alias-state-error-primary, #e24b4a)'
-  return 'var(--dsw-alias-label-tertiary, #bdbdbd)'
+  if (s?.status === 'online') return 'var(--dsw-alias-state-success-primary)'
+  if (s?.status === 'error') return 'var(--dsw-alias-state-error-primary)'
+  return 'var(--dsw-alias-label-tertiary)'
 }
 const badge: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', fontSize: 10, lineHeight: 1, padding: '3px 9px', borderRadius: 999, border: '1px solid transparent', flexShrink: 0, fontWeight: 500 }
-const badgeOff: React.CSSProperties = { ...badge, color: 'var(--dsw-alias-state-error-primary, #e24b4a)', borderColor: 'rgba(226,75,74,0.35)', background: 'rgba(226,75,74,0.08)' }
-const badgeOn: React.CSSProperties = { ...badge, color: 'var(--dsw-alias-state-success-primary, #1D9E75)', borderColor: 'rgba(29,158,117,0.35)', background: 'rgba(29,158,117,0.08)' }
-const channelSub: React.CSSProperties = { fontSize: 11, color: 'var(--dsw-alias-label-tertiary, #888)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }
+const badgeOff: React.CSSProperties = { ...badge, color: 'var(--dsw-alias-state-error-primary)', borderColor: 'color-mix(in srgb, var(--dsw-alias-state-error-primary) 40%, transparent)', background: 'color-mix(in srgb, var(--dsw-alias-state-error-primary) 8%, transparent)' }
+const badgeOn: React.CSSProperties = { ...badge, color: 'var(--dsw-alias-state-success-primary)', borderColor: 'color-mix(in srgb, var(--dsw-alias-state-success-primary) 40%, transparent)', background: 'color-mix(in srgb, var(--dsw-alias-state-success-primary) 8%, transparent)' }
+const channelSub: React.CSSProperties = { fontSize: 11, color: 'var(--dsw-alias-label-tertiary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }
 const channelActions: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }
-const iconBtn: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 44, height: 44, border: 'none', borderRadius: 6, background: 'transparent', color: 'var(--dsw-alias-label-tertiary, #888)', cursor: 'pointer' }
+const iconBtn: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 44, height: 44, border: 'none', borderRadius: 6, background: 'transparent', color: 'var(--dsw-alias-label-tertiary)', cursor: 'pointer' }
 
 /** Edit button — text style matching the official models settings page (secondaryButton). */
-const editBtn: React.CSSProperties = { boxSizing: 'border-box', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', height: 28, padding: '0 10px', fontSize: 12, lineHeight: '18px', borderRadius: 14, border: '1px solid var(--dsw-alias-border-l2, #ddd)', background: 'transparent', color: 'var(--dsw-alias-label-primary, inherit)', cursor: 'pointer' }
+const editBtn: React.CSSProperties = { boxSizing: 'border-box', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', height: 28, padding: '0 10px', fontSize: 12, lineHeight: '18px', borderRadius: 14, border: '1px solid var(--dsw-alias-border-l2)', background: 'transparent', color: 'var(--dsw-alias-label-primary)', cursor: 'pointer' }
 
 /** Delete button — text style matching the official models settings page (dangerButton). */
-const deleteBtn: React.CSSProperties = { boxSizing: 'border-box', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', height: 28, padding: '0 10px', fontSize: 12, lineHeight: '18px', borderRadius: 14, border: 'none', background: 'transparent', color: 'var(--dsw-alias-state-error-primary, #e24b4a)', cursor: 'pointer' }
-const toggleBtn: React.CSSProperties = { position: 'relative', width: 36, height: 21, border: 'none', borderRadius: 999, background: 'var(--dsw-alias-border-l2, #ccc)', cursor: 'pointer', padding: 0, flexShrink: 0 }
-const toggleOn: React.CSSProperties = { ...toggleBtn, background: 'var(--dsw-alias-state-business-primary, #185FA5)' }
-const toggleKnob: React.CSSProperties = { position: 'absolute', left: 2, top: 2, width: 17, height: 17, borderRadius: '50%', background: '#fff', boxShadow: '0 1px 2px rgba(0,0,0,0.25)', transition: 'left 0.15s ease' }
+const deleteBtn: React.CSSProperties = { boxSizing: 'border-box', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', height: 28, padding: '0 10px', fontSize: 12, lineHeight: '18px', borderRadius: 14, border: 'none', background: 'transparent', color: 'var(--dsw-alias-state-error-primary)', cursor: 'pointer' }
+const toggleBtn: React.CSSProperties = { position: 'relative', width: 36, height: 21, border: 'none', borderRadius: 999, background: 'var(--dsw-alias-border-l2)', cursor: 'pointer', padding: 0, flexShrink: 0 }
+const toggleOn: React.CSSProperties = { ...toggleBtn, background: 'var(--dsw-alias-state-business-primary)' }
+const toggleKnob: React.CSSProperties = { position: 'absolute', left: 2, top: 2, width: 17, height: 17, borderRadius: '50%', background: 'var(--dsw-alias-label-primary-foreground)', boxShadow: '0 1px 2px rgba(0,0,0,0.25)', transition: 'left 0.15s ease' }
 const toggleKnobOn: React.CSSProperties = { ...toggleKnob, left: 17 }
 
 /**
@@ -211,12 +212,14 @@ export function ImChannelsSection(props: ImChannelsSectionProps) {
         channels.length > 0 ? createElement('span', { style: countBadge }, String(channels.length)) : null,
       ),
       createElement('div', { style: headerRight },
-        createElement('button', { style: addBtn, onClick: () => { setEditId(undefined); setModalOpen(true) } },
-          createElement('svg', { width: 16, height: 16, viewBox: '0 0 16 16', fill: 'none', stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round' },
+        createElement(Button, {
+          variant: 'primary',
+          size: 'sm',
+          icon: createElement('svg', { width: 16, height: 16, viewBox: '0 0 16 16', fill: 'none', stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round' },
             createElement('path', { d: 'M8 3v10M3 8h10' }),
           ),
-          createElement('span', null, t('btn.add')),
-        ),
+          onClick: () => { setEditId(undefined); setModalOpen(true) },
+        }, t('btn.add')),
       ),
     ),
     createElement('div', { style: body },
@@ -276,18 +279,18 @@ export function ImChannelsSection(props: ImChannelsSectionProps) {
       onSave: handleSave,
     }) : null,
     pendingDelete !== undefined ? createElement('div', {
-      style: { position: 'fixed', inset: 0, zIndex: 300, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.5)', padding: 24 },
+      style: { position: 'fixed', inset: 0, zIndex: 300, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--dsw-alias-bg-mask-1)', padding: 24 },
       onMouseDown: (e: React.MouseEvent) => { if (e.target === e.currentTarget) setPendingDelete(undefined) },
     },
       createElement('div', {
-        style: { display: 'flex', flexDirection: 'column', gap: 12, width: 380, maxWidth: '100%', background: 'var(--dsw-alias-bg-layer-2, #fff)', border: '1px solid var(--dsw-alias-border-l2, #ddd)', borderRadius: 14, padding: '18px', boxShadow: '0 20px 48px rgba(0,0,0,0.36)' },
+        style: { display: 'flex', flexDirection: 'column', gap: 12, width: 380, maxWidth: '100%', background: 'var(--dsw-alias-bg-layer-3)', border: '1px solid var(--dsw-alias-border-l1)', borderRadius: 12, padding: '18px', boxShadow: 'var(--dsw-shadow-lv2)' },
         onClick: (e: React.MouseEvent) => e.stopPropagation(),
       },
-        createElement('div', { style: { fontSize: 15, fontWeight: 500 } }, t('delete.title')),
-        createElement('p', { style: { fontSize: 13, color: 'var(--dsw-alias-label-secondary, #555)', margin: 0 } }, t('delete.confirm')),
+        createElement('div', { style: { fontSize: 15, fontWeight: 500, color: 'var(--dsw-alias-label-primary)' } }, t('delete.title')),
+        createElement('p', { style: { fontSize: 13, color: 'var(--dsw-alias-label-secondary)', margin: 0 } }, t('delete.confirm')),
         createElement('div', { style: { display: 'flex', justifyContent: 'flex-end', gap: 8 } },
-          createElement('button', { style: { height: 32, padding: '0 14px', background: 'transparent', color: 'inherit', border: '1px solid var(--dsw-alias-border-l2, #ccc)', borderRadius: 8, cursor: 'pointer', fontSize: 13 }, onClick: () => setPendingDelete(undefined) }, t('btn.cancel')),
-          createElement('button', { style: { height: 32, padding: '0 14px', background: 'var(--dsw-alias-state-error-primary, #e24b4a)', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: 13 }, onClick: () => void handleDelete() }, t('btn.confirmDelete')),
+          createElement('button', { style: { height: 32, padding: '0 14px', background: 'transparent', color: 'var(--dsw-alias-label-primary)', border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 8, cursor: 'pointer', fontSize: 13 }, onClick: () => setPendingDelete(undefined) }, t('btn.cancel')),
+          createElement('button', { style: { height: 32, padding: '0 14px', background: 'var(--dsw-alias-state-error-primary)', color: 'var(--dsw-alias-label-primary-foreground)', border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: 13 }, onClick: () => void handleDelete() }, t('btn.confirmDelete')),
         ),
       ),
     ) : null,
