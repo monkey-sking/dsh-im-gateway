@@ -24,6 +24,8 @@
 import { Context } from '@deepseek-ai/cordis'
 import { TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import type { TypertSchema } from '@deepseek-ai/dsh-typert-protocol'
+import type { TypertRegistry } from '@deepseek-ai/dsh-typert-registry'
+import type { TypertContribution } from '@deepseek-ai/dsh-typert-registry/types'
 import type { ChannelStatus, ImChannelInstance } from './gateway/types'
 import * as qqLogin from './channels/qq-login'
 import * as weixinLogin from './channels/weixin-login'
@@ -148,7 +150,9 @@ const CONTRIBUTION = {
     },
   ],
   model: { services: [], events: [], objects: [] },
-}
+  // Hand-written contribution: the generated-artifact types (TypertPackageModel
+  // members) are stricter than what a literal can express, so assert the shape.
+} as unknown as TypertContribution
 
 interface SettingsLike {
   describe(opts: { redactSecrets: boolean }): { ns: string; value?: Record<string, unknown>; revision: number }[]
@@ -186,10 +190,11 @@ function mergeStoredSecrets(
     if (!stored) return inst
     const config = { ...inst.config }
     for (const key of SECRET_KEYS) {
-      const value = config[key]
+      const bag = config as unknown as Record<string, string | undefined>
+      const value = bag[key]
       if (value === '' || value === undefined) {
-        const old = stored.config?.[key]
-        if (old !== undefined && old !== '') config[key] = old
+        const old = (stored.config as unknown as Record<string, string | undefined> | undefined)?.[key]
+        if (old !== undefined && old !== '') bag[key] = old
       }
     }
     return { ...inst, config }
@@ -302,7 +307,10 @@ class ImGatewayApi extends TypertRemoteService {
 export function registerRemoteApi(ctx: Context): void {
   new ImGatewayApi(ctx)
   ctx.effect(
-    () => ctx.get('typert').register(CONTRIBUTION),
+    // The cordis Context merge in dsh-typert-protocol declares only the narrow
+    // TypertRegistryContract (local/remotes/lookups/contexts); the live service
+    // is the full TypertRegistry class whose register() the loader itself uses.
+    () => (ctx.get('typert') as TypertRegistry).register(CONTRIBUTION),
     `im-gateway: typert contribution ${PACKAGE}`,
   )
 }

@@ -180,7 +180,7 @@ export function createConfigApi(ctx: ClientContext): ConfigApi {
       if (!result.ok) {
         return { ok: false, code: result.error?.code ?? 'remote-error', message: result.error?.message ?? `${SERVICE}.${method} failed` }
       }
-      return { ok: true, ...(result.value as ConfigLoadResult & ChannelStatusesResult & QrLoginResult) }
+      return { ...(result.value as ConfigLoadResult & ChannelStatusesResult & QrLoginResult), ok: true }
     } catch (err) {
       return { ok: false, code: 'remote-error', message: err instanceof Error ? err.message : String(err) }
     }

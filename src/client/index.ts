@@ -36,6 +36,8 @@ import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 // Type-only pulls the SlotMap merge that declares `settings.section`
 // (the settings domain owns that slot's type home).
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
+// Type-only pulls the Context.locale merge (the locale domain owns that service's type home).
+import type {} from '@deepseek-ai/dsh-client-locale/client'
 import { ImChannelsSection } from './ImChannelsSection.ts'
 import { createConfigApi } from './config-api.ts'
 import { zh as clientZh, en as clientEn } from './client-i18n.ts'
@@ -46,6 +48,15 @@ const SECTION_ID = 'im-channels'
 const SECTION_ORDER = 20
 /** i18n namespace for this plugin's client-side text. */
 const I18N_NS = 'im-gateway'
+
+// Register this plugin's dictionary keys in the locale namespace map so
+// ctx.locale.register/bind accept the 'im-gateway' namespace key. The map
+// value is the key union (LocaleKeysOf intersects it with string).
+declare module '@deepseek-ai/dsh-client-ui-slots' {
+  interface LocaleNamespaceMap {
+    'im-gateway': keyof typeof clientZh
+  }
+}
 
 /** Services this browser plugin requires (cordis fiber inject). */
 export const inject = ['slots', 'locale', 'connection', 'remote']

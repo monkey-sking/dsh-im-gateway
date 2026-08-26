@@ -17,6 +17,7 @@
  */
 import { createElement, useEffect, useMemo, useRef, useState } from 'react'
 import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
+import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
 import type { ConfigApi, QrLoginStatus } from './config-api.ts'
 
 /** The single settings namespace owning every channel config. */
@@ -80,7 +81,7 @@ export interface ImChannelModalProps {
   /** Config api — used for QR-scan login on qq / weixin types. */
   configApi?: ConfigApi
   /** Translation function (bound to 'im-gateway' namespace). */
-  t: (key: string, params?: Record<string, unknown>) => string
+  t: TranslateNS<'im-gateway'>
   onClose: () => void
   onSave: (draft: ChannelDraft) => Promise<void>
 }

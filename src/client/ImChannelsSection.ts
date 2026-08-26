@@ -13,6 +13,7 @@
  */
 import { createElement, useEffect, useState } from 'react'
 import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
+import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
 import {
   ImChannelModal,
 
@@ -27,7 +28,7 @@ export interface ImChannelsSectionProps {
   /** Config read/write api (host route backed). */
   configApi: ConfigApi
   /** Translation function (bound to 'im-gateway' namespace). */
-  t: (key: string, params?: Record<string, unknown>) => string
+  t: TranslateNS<'im-gateway'>
 }
 
 // ── inline styles (ported from pi-desk-top ImPage.module.css) ──

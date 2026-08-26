@@ -1,7 +1,7 @@
 import { Context, Service } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
 import { SessionId } from '@deepseek-ai/dsh-session'
-import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import { createUserMessage, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock, UserMessage } from '@deepseek-ai/dsh-llm'
 import { installModelSelection } from '@deepseek-ai/dsh-agent'
 import type { AgentHandle, AgentSetup, ModelSelection, ModelSelectionRef } from '@deepseek-ai/dsh-agent'
@@ -69,7 +69,7 @@ export const Config = Schema.object({
         botId: Schema.string().default(''),
         cdnBaseUrl: Schema.string().default(''),
         pollIntervalMs: Schema.number().default(3000),
-      }).default({}),
+      }).default({} as never),
     }),
   ).default([]),
 })
@@ -285,7 +285,7 @@ export class ImGatewayService extends Service implements ImGateway {
   // (yield a cleanup fn, then the init body) mirrors the official pattern
   // (dsh-settings: `async *[Service.init]()`).
 
-  async *[Service.init](): AsyncGenerator<void, void, void> {
+  async *[Service.init](): AsyncGenerator<() => Promise<void> | void, void, void> {
     // Cleanup runs when the service/plugin unloads (the old stop() body).
     yield async () => {
       this.active = false
@@ -335,7 +335,7 @@ export class ImGatewayService extends Service implements ImGateway {
       streamThrottle: this.streamThrottle,
       channelForConv: (convKey: string) => this.channelForConv(convKey),
     })
-    this.commandHandler = new CommandHandler(this as GatewayHandle)
+    this.commandHandler = new CommandHandler(this as unknown as GatewayHandle)
     // 监听全局语言切换（dsh 设置 → 通用设置 → 语言）
     this.unsubLocaleChange = this.ctx.root.on('settings/updated', (ns, next) => {
       if (ns !== settingsNamespace('locale')) return
@@ -749,7 +749,14 @@ export class ImGatewayService extends Service implements ImGateway {
       get current(): ModelSelection | undefined {
         const override = gateway.modelOverrides.get(sessionId) ?? gateway.globalModelOverride
         const base = defaults?.currentSelection() as ModelSelection | undefined
-        return override ?? base ?? undefined
+        if (!override) return base ?? undefined
+        return {
+          provider: override.provider,
+          model: override.model,
+          ...(override.reasoningEffort === undefined
+            ? {}
+            : { reasoningEffort: ReasoningEffortId(override.reasoningEffort) }),
+        }
       },
       set current(next) {
         if (next) {
