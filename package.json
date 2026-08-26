@@ -1,6 +1,6 @@
 {
   "name": "@lijian-ui/dsh-im-gateway",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Multi-channel IM gateway plugin for DeepSeek Harness (dsh): DingTalk / QQ / WeChat(iLink) with QR-scan binding, streaming replies, and a unified ctx.imGateway service. 为 DeepSeek Harness 提供钉钉/QQ/个人微信多 IM 通道接入。",
   "license": "MIT",
   "type": "module",
