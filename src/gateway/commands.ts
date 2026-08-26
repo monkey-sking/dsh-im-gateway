@@ -9,7 +9,7 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import { SessionId } from '@deepseek-ai/dsh-session'
-import type { AgentHandle, ModelSelection, ModelSelectionRef } from '@deepseek-ai/dsh-agent'
+import type { AgentHandle, AgentSetup, ModelSelection, ModelSelectionRef } from '@deepseek-ai/dsh-agent'
 import type { ImChannelAdapter, ImGatewayConfig, ImInboundMessage } from './types'
 import type { Translator } from './i18n'
 import { existsSync, statSync } from 'node:fs'
@@ -30,7 +30,8 @@ export interface GatewayHandle {
   setGlobalModelOverride(v: { provider: string; model: string; reasoningEffort?: string } | undefined): void
   attachToWorkspace(sessionId: SessionId, cwd?: string): Promise<void>
   logWorkspaceState(label: string): void
-  installModelSelection(agent: { ctx: Context; options?: Record<string, unknown> }, sessionId: SessionId): void
+  presetSetup(sessionId: SessionId): AgentSetup
+  currentModelFor(sessionId: SessionId): { provider?: string; model?: string; reasoningEffort?: string } | undefined
   channelForConv(convKey: string): ImChannelAdapter | undefined
   workspaceOf(convKey: string): string | undefined
   setWorkspace(convKey: string, path: string): void
@@ -355,8 +356,11 @@ export class CommandHandler {
         this.gw.modelOverrides.delete(currentSessionId)
         this.gw.sessionToConv.delete(currentSessionId)
       }
-      const handle = await this.gw.ctx.agents.resume({ resumeSessionId: targetSessionId })
-      this.gw.installModelSelection(handle.agent, targetSessionId)
+      const handle = await this.gw.ctx.agents.resume({
+        resumeSessionId: targetSessionId,
+        agentOptions: this.gw.currentModelFor(targetSessionId),
+        setup: this.gw.presetSetup(targetSessionId),
+      })
       this.gw.agentHandles.set(targetSessionId, handle)
       this.gw.convToSession.set(convKey, targetSessionId)
       this.gw.sessionToConv.set(targetSessionId, convKey)

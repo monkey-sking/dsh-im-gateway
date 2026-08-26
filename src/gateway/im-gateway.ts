@@ -4,7 +4,7 @@ import { SessionId } from '@deepseek-ai/dsh-session'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock, UserMessage } from '@deepseek-ai/dsh-llm'
 import { installModelSelection } from '@deepseek-ai/dsh-agent'
-import type { AgentHandle, ModelSelection, ModelSelectionRef } from '@deepseek-ai/dsh-agent'
+import type { AgentHandle, AgentSetup, ModelSelection, ModelSelectionRef } from '@deepseek-ai/dsh-agent'
 import type {
   ChannelStatus,
   ImChannelAdapter,
@@ -103,7 +103,7 @@ export const Config = Schema.object({
  * ─────────────────────────────────────────────────────────────────────────
  */
 export class ImGatewayService extends Service implements ImGateway {
-  static inject = ['agents']
+  static inject = ['agents', 'agentPresets']
 
   private readonly channels = new Map<string, ImChannelAdapter>()
   private readonly convToSession = new Map<string, SessionId>() // convKey → sessionId
@@ -507,8 +507,11 @@ export class ImGatewayService extends Service implements ImGateway {
       const stored = (await persistence.list()).find((header) => header.id === sessionId)
       if (stored) {
         console.log(`[im-gateway] ensureSession: branch 2 (resume from persistence)`)
-        const handle = await this.ctx.agents.resume({ resumeSessionId: sessionId })
-        this.installModelSelection(handle.agent, sessionId)
+        const handle = await this.ctx.agents.resume({
+          resumeSessionId: sessionId,
+          agentOptions: this.currentModelFor(sessionId),
+          setup: this.presetSetup(sessionId),
+        })
         this.agentHandles.set(sessionId, handle)
         this.convToSession.set(convKey, sessionId)
         this.sessionToConv.set(sessionId, convKey)
@@ -537,22 +540,22 @@ export class ImGatewayService extends Service implements ImGateway {
       handle = await this.ctx.agents.create({
         sessionId,
         meta: { cwd: effectiveCwd },
+        agentOptions: this.currentModelFor(sessionId),
+        setup: this.presetSetup(sessionId),
       })
     } catch (err) {
       if (isIdCollision(err)) {
         console.log(`[im-gateway] ensureSession: id collision, falling back to resume`)
-        handle = await this.ctx.agents.resume({ resumeSessionId: sessionId })
+        handle = await this.ctx.agents.resume({
+          resumeSessionId: sessionId,
+          agentOptions: this.currentModelFor(sessionId),
+          setup: this.presetSetup(sessionId),
+        })
       } else {
         throw err
       }
     }
-    // Inject the model selection into the agent's prompt assembly. The persona
-    // template renders {{provider}}/{{model}} from the selected model; official
-    // entry points (api-proxy selectionFor) install this, but a bare
-    // agents.create does not — without it every turn fails with
-    // `prompt variable "{{model}}" has no value`. We use the deployment's
-    // default model selection (agent-default-model), like the official paths do.
-    this.installModelSelection(handle.agent, sessionId)
+
     this.agentHandles.set(sessionId, handle)
 
     this.convToSession.set(convKey, sessionId)
@@ -694,6 +697,37 @@ export class ImGatewayService extends Service implements ImGateway {
     } catch { /* ignore */ }
   }
 
+  /** Compute the initial model selection for a session (override → global → deployment default). */
+  currentModelFor(sessionId: SessionId): { provider?: string; model?: string; reasoningEffort?: string } | undefined {
+    const override = this.modelOverrides.get(sessionId) ?? this.globalModelOverride
+    if (override) return override
+    const defaults = this.ctx.get('agentDefaultModel') as
+      | { currentSelection(): { provider?: string; model?: string; reasoningEffort?: string } | undefined }
+      | undefined
+    return defaults?.currentSelection()
+  }
+
+  /**
+   * Agent setup callback: mount the 'standard' preset (tools, prompt sections,
+   * skills) and install model selection into the agent's prompt assembly.
+   * Called by agents.create/agents.resume BEFORE the agent is published, so
+   * the first prompt assembly has all tools and {{provider}}/{{model}} variables.
+   */
+  presetSetup(sessionId: SessionId): AgentSetup {
+    const gateway = this
+    return async (agentCtx: Context) => {
+      const presets = gateway.ctx.get('agentPresets') as
+        | { mount(agentCtx: Context, id?: string): Promise<unknown> }
+        | undefined
+      if (presets) {
+        await presets.mount(agentCtx, 'standard')
+      } else {
+        console.warn('[im-gateway] agentPresets not available, agent will have no tools')
+      }
+      gateway.installModelSelection(agentCtx, sessionId)
+    }
+  }
+
   /**
    * Wire the agent-default-model selection into one agent's prompt assembly
    * (mirrors dsh-host-apiproxy selectionFor). Listeners live on the agent's
@@ -706,7 +740,7 @@ export class ImGatewayService extends Service implements ImGateway {
    * `modelRefs` so `/model` can mutate `current` on the same object the prompt
    * assembly reads.
    */
-  private installModelSelection(agent: { ctx: Context; options?: Record<string, unknown> }, sessionId: SessionId): void {
+  private installModelSelection(agentCtx: Context, sessionId: SessionId): void {
     const gateway = this
     const defaults = this.ctx.get('agentDefaultModel') as
       | { currentSelection(): { provider?: string; model?: string; reasoningEffort?: string } | undefined }
@@ -730,7 +764,7 @@ export class ImGatewayService extends Service implements ImGateway {
       },
       assembled: undefined,
     }
-    installModelSelection(agent.ctx, ref)
+    installModelSelection(agentCtx, ref)
     this.modelRefs.set(sessionId, ref)
   }
 
