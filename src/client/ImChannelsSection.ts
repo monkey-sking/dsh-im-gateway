@@ -2,9 +2,9 @@
  * IM Channels settings section (browser half).
  *
  * Renders the whole IM bundle config on one page: header with an "Add channel"
- * button (top-right), channel instances GROUPED BY TYPE (钉钉 / QQ / 个人微信 —
- * each type may have MULTIPLE bot instances), empty state, and the add/edit
- * modal. Data lives in the `im-gateway` config as `channels: ImChannelInstance[]`
+ * button (top-right), channel instances GROUPED BY TYPE (钉钉 / QQ / 个人微信 /
+ * 飞书 — each type may have MULTIPLE bot instances), empty state, and the
+ * add/edit modal. Data lives in the `im-gateway` config as `channels: ImChannelInstance[]`
  * and is read/written through the host config route (see config-api.ts) — the
  * official `api.settings.*` refuses third-party namespaces.
  *
@@ -39,7 +39,6 @@ const titleRow: React.CSSProperties = { display: 'flex', alignItems: 'center', g
 const title: React.CSSProperties = { fontSize: 17, fontWeight: 500, color: 'var(--dsw-alias-label-primary)', margin: 0, whiteSpace: 'nowrap' }
 const countBadge: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', minWidth: 22, height: 22, padding: '0 7px', borderRadius: 999, background: 'var(--dsw-alias-bg-layer-3)', color: 'var(--dsw-alias-label-secondary)', fontSize: 11, fontWeight: 500 }
 const headerRight: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 8 }
-const addBtn: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 6, height: 32, padding: '0 14px', border: 'none', borderRadius: 8, background: 'var(--dsw-alias-state-business-primary)', color: 'var(--dsw-alias-label-primary-foreground)', fontSize: 13, fontWeight: 500, cursor: 'pointer' }
 const body: React.CSSProperties = { flex: 1, overflowY: 'auto', padding: '16px 0 24px', display: 'flex', flexDirection: 'column', gap: 16, maxWidth: 760, width: '100%' }
 const errorStyle: React.CSSProperties = { fontSize: 12, lineHeight: 1.5, color: 'var(--dsw-alias-state-error-primary)', padding: '10px 14px', background: 'color-mix(in srgb, var(--dsw-alias-state-error-primary) 8%, transparent)', border: '1px solid color-mix(in srgb, var(--dsw-alias-state-error-primary) 40%, transparent)', borderRadius: 8, whiteSpace: 'pre-wrap' }
 const empty: React.CSSProperties = { display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '32px 24px', border: '1px dashed var(--dsw-alias-border-l3)', borderRadius: 10, background: 'var(--dsw-alias-bg-layer-1)', textAlign: 'center' }
@@ -67,13 +66,6 @@ const badgeOff: React.CSSProperties = { ...badge, color: 'var(--dsw-alias-state-
 const badgeOn: React.CSSProperties = { ...badge, color: 'var(--dsw-alias-state-success-primary)', borderColor: 'color-mix(in srgb, var(--dsw-alias-state-success-primary) 40%, transparent)', background: 'color-mix(in srgb, var(--dsw-alias-state-success-primary) 8%, transparent)' }
 const channelSub: React.CSSProperties = { fontSize: 11, color: 'var(--dsw-alias-label-tertiary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }
 const channelActions: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }
-const iconBtn: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 44, height: 44, border: 'none', borderRadius: 6, background: 'transparent', color: 'var(--dsw-alias-label-tertiary)', cursor: 'pointer' }
-
-/** Edit button — text style matching the official models settings page (secondaryButton). */
-const editBtn: React.CSSProperties = { boxSizing: 'border-box', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', height: 28, padding: '0 10px', fontSize: 12, lineHeight: '18px', borderRadius: 14, border: '1px solid var(--dsw-alias-border-l2)', background: 'transparent', color: 'var(--dsw-alias-label-primary)', cursor: 'pointer' }
-
-/** Delete button — text style matching the official models settings page (dangerButton). */
-const deleteBtn: React.CSSProperties = { boxSizing: 'border-box', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', height: 28, padding: '0 10px', fontSize: 12, lineHeight: '18px', borderRadius: 14, border: 'none', background: 'transparent', color: 'var(--dsw-alias-state-error-primary)', cursor: 'pointer' }
 const toggleBtn: React.CSSProperties = { position: 'relative', width: 36, height: 21, border: 'none', borderRadius: 999, background: 'var(--dsw-alias-border-l2)', cursor: 'pointer', padding: 0, flexShrink: 0 }
 const toggleOn: React.CSSProperties = { ...toggleBtn, background: 'var(--dsw-alias-state-business-primary)' }
 const toggleKnob: React.CSSProperties = { position: 'absolute', left: 2, top: 2, width: 17, height: 17, borderRadius: '50%', background: 'var(--dsw-alias-label-primary-foreground)', boxShadow: '0 1px 2px rgba(0,0,0,0.25)', transition: 'left 0.15s ease' }
@@ -91,22 +83,37 @@ const BRAND_PATHS: Record<string, string> = {
   wecom: 'm17.326 8.158l-.003-.007a6.6 6.6 0 0 0-1.178-1.674c-1.266-1.307-3.067-2.19-5.102-2.417a9.3 9.3 0 0 0-2.124 0h-.001c-2.061.228-3.882 1.107-5.14 2.405a6.7 6.7 0 0 0-1.194 1.682A5.7 5.7 0 0 0 2 10.657c0 1.106.332 2.218.988 3.201l.006.01c.391.594 1.092 1.39 1.637 1.83l.983.793l-.208.875l.527-.267l.708-.358l.761.225c.467.137.955.227 1.517.29h.005q.515.06 1.026.059c.355 0 .724-.02 1.095-.06a9 9 0 0 0 1.346-.258c.095.7.43 1.337.932 1.81c-.658.208-1.352.358-2.061.436c-.442.048-.883.072-1.312.072q-.627 0-1.253-.072a10.7 10.7 0 0 1-1.861-.36l-2.84 1.438s-.29.131-.44.131c-.418 0-.702-.285-.702-.704c0-.252.067-.598.128-.84l.394-1.653c-.728-.586-1.563-1.544-2.052-2.287A7.76 7.76 0 0 1 0 10.658a7.7 7.7 0 0 1 .787-3.39a8.7 8.7 0 0 1 1.551-2.19c1.61-1.665 3.878-2.73 6.359-3.006a11.3 11.3 0 0 1 2.565 0c2.47.275 4.712 1.353 6.323 3.017a8.6 8.6 0 0 1 1.539 2.192c.466.945.769 1.937.769 2.978a3.06 3.06 0 0 0-2-.005c-.001-.644-.189-1.329-.564-2.09zm4.125 6.977l-.024-.024l-.024-.018l-.024-.018l-.096-.095a4.24 4.24 0 0 1-1.169-2.192q0-.038-.006-.075l-.006-.056l-.035-.144a1.3 1.3 0 0 0-.358-.61a1.386 1.386 0 0 0-1.957 0a1.4 1.4 0 0 0 0 1.963c.191.191.418.311.668.371c.024.012.06.012.084.012q.019 0 .041.006q.023.005.042.006a4.24 4.24 0 0 1 2.231 1.186c.048.048.096.095.131.143a.323.323 0 0 0 .466 0a.35.35 0 0 0 .036-.455m-1.05 4.37l-.025.025c-.119.096-.31.096-.453-.036a.326.326 0 0 1 0-.467c.047-.036.094-.083.141-.13l.002-.002a4.27 4.27 0 0 0 1.187-2.28q.005-.024.006-.043c0-.024 0-.06.012-.084a1.386 1.386 0 0 1 2.326-.67a1.4 1.4 0 0 1 0 1.964c-.167.18-.382.299-.608.359l-.143.036l-.057.005q-.035.006-.075.007a4.2 4.2 0 0 0-2.183 1.173l-.095.096q-.009.01-.018.024t-.018.024m-4.392-1.053l.024.024l.024.018q.015.009.024.018l.096.096a4.25 4.25 0 0 1 1.169 2.19q0 .04.006.076q.005.03.006.057l.035.143c.06.228.18.443.358.611c.537.539 1.42.539 1.957 0a1.4 1.4 0 0 0 0-1.964a1.4 1.4 0 0 0-.668-.371c-.024-.012-.06-.012-.084-.012q-.018 0-.041-.006l-.042-.006a4.25 4.25 0 0 1-2.231-1.185a1.4 1.4 0 0 1-.131-.144a.323.323 0 0 0-.466 0a.325.325 0 0 0-.036.455m1.039-4.358l.024-.024a.32.32 0 0 1 .453.035a.326.326 0 0 1 0 .467c-.047.036-.094.083-.141.13l-.002.002a4.27 4.27 0 0 0-1.187 2.281l-.006.042c0 .024 0 .06-.012.084a1.386 1.386 0 0 1-2.326.67a1.4 1.4 0 0 1 0-1.963c.166-.18.381-.3.608-.36l.143-.035q.026 0 .056-.006q.037-.005.075-.006a4.2 4.2 0 0 0 2.183-1.174l.096-.095l.018-.025z',
 }
 
+/**
+ * Brand glyphs that need their own viewBox (everything in BRAND_PATHS is
+ * 24×24). 飞书/Lark 的标识取自 ByteDance IconPark（Apache-2.0）的 `lark`
+ * —— 48×48 单路径，与其它渠道的扁平单色风格一致。
+ */
+const BRAND_GLYPHS_EXTRA: Record<string, { viewBox: string; d: string }> = {
+  feishu: {
+    viewBox: '0 0 48 48',
+    d: 'M41.072 5.994L3.31 16.52l9.075 9.294l8.414.146l9.683-9.44q-.384-.787-.384-1.318c0-.794.311-1.422.796-1.868q1.244-1.145 2.994-.342zm1.03.734L31.578 44.49l-9.294-9.075L22.137 27l9.375-9.518a2.54 2.54 0 0 0 1.664.495c.902-.05 1.485-.596 1.759-.917a2.35 2.35 0 0 0 .567-1.649a2.57 2.57 0 0 0-.52-1.464z',
+  },
+}
+
 /** Official brand accent colors (fallback to currentColor when unset). */
 const BRAND_COLORS: Record<string, string> = {
   qq: '#12B7F5',
   weixin: '#07C160',
   dingtalk: '#0089FF',
   wecom: '#0082EF',
+  feishu: '#3370FF',
 }
 
 /** Channel-type icon as inline SVG (official brand glyphs). */
 function ChannelGlyph({ type }: { type: string }) {
-  const d = BRAND_PATHS[type] ?? BRAND_PATHS.dingtalk
+  const extra = BRAND_GLYPHS_EXTRA[type]
+  const d = extra?.d ?? BRAND_PATHS[type] ?? BRAND_PATHS.dingtalk
+  const viewBox = extra?.viewBox ?? '0 0 24 24'
   const color = BRAND_COLORS[type]
   return createElement('svg', {
     width: 20,
     height: 20,
-    viewBox: '0 0 24 24',
+    viewBox,
     fill: color ?? 'currentColor',
     'aria-hidden': true,
   },
@@ -202,7 +209,7 @@ export function ImChannelsSection(props: ImChannelsSectionProps) {
 
   const groups = TYPE_ORDER.map((type) => ({
     type,
-    label: type === 'dingtalk' ? t('type.dingtalk') : type === 'qq' ? t('type.qq') : type === 'weixin' ? t('type.weixin') : type,
+    label: type === 'dingtalk' ? t('type.dingtalk') : type === 'qq' ? t('type.qq') : type === 'weixin' ? t('type.weixin') : type === 'feishu' ? t('type.feishu') : type === 'wecom' ? t('type.wecom') : type,
     items: channels.filter((inst) => inst.type === type),
   }))
 
@@ -246,7 +253,7 @@ export function ImChannelsSection(props: ImChannelsSectionProps) {
                       createElement('div', { style: channelInfo },
                         createElement('div', { style: channelNameRow },
                           createElement('span', { style: { ...statusDot, background: statusColor(statuses[inst.id]) }, title: statuses[inst.id]?.status ?? 'unknown' }),
-                          createElement('span', { style: channelName }, inst.name || (inst.type === 'dingtalk' ? t('type.dingtalk') : inst.type === 'qq' ? t('type.qq') : inst.type === 'weixin' ? t('type.weixin') : inst.type)),
+                          createElement('span', { style: channelName }, inst.name || (inst.type === 'dingtalk' ? t('type.dingtalk') : inst.type === 'qq' ? t('type.qq') : inst.type === 'weixin' ? t('type.weixin') : inst.type === 'feishu' ? t('type.feishu') : inst.type === 'wecom' ? t('type.wecom') : inst.type)),
                           createElement('span', { style: inst.enabled ? badgeOn : badgeOff }, inst.enabled ? t('badge.connected') : t('badge.disabled')),
                         ),
                         createElement('span', { style: channelSub }, inst.id),
@@ -258,8 +265,22 @@ export function ImChannelsSection(props: ImChannelsSectionProps) {
                           title: inst.enabled ? t('toggle.disable') : t('toggle.enable'),
                           onClick: () => void handleToggle(inst.id, inst.enabled),
                         }, createElement('span', { style: inst.enabled ? toggleKnobOn : toggleKnob })),
-                        createElement('button', { type: 'button', style: editBtn, onClick: () => { setEditId(inst.id); setModalOpen(true) } }, t('btn.edit')),
-                        createElement('button', { type: 'button', style: deleteBtn, onClick: () => setPendingDelete(inst.id) }, t('btn.delete')),
+                        // Official row-action pattern (dsh-client-ui-settings-models
+                        // `.rowActions`): edit = `outline` sm (bordered .5px capsule,
+                        // border-l3); delete = border-less transparent + danger text
+                        // (official `.dangerButton` — there is no `danger` variant, so
+                        // the color is passed through `style`).
+                        createElement(Button, {
+                          variant: 'outline',
+                          size: 'sm',
+                          onClick: () => { setEditId(inst.id); setModalOpen(true) },
+                        }, t('btn.edit')),
+                        createElement(Button, {
+                          variant: 'ghost',
+                          size: 'sm',
+                          style: { color: 'var(--dsw-alias-state-error-primary)' },
+                          onClick: () => setPendingDelete(inst.id),
+                        }, t('btn.delete')),
 
                       ),
                     )

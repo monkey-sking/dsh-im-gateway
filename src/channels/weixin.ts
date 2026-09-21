@@ -137,6 +137,9 @@ function stateDir(): string {
 }
 
 class WeixinAdapter implements ImChannelAdapter {
+  /** 5-minute TTL — matches pi-desktop feishu/dingtalk connection dedup. */
+  private static readonly DEDUP_TTL_MS = 5 * 60 * 1000
+
   private token: string
   private botId: string
   private baseUrl: string
@@ -147,6 +150,8 @@ class WeixinAdapter implements ImChannelAdapter {
   private reconnectAttempts = 0
   private typingTimer: ReturnType<typeof setTimeout> | null = null
   private typingTarget: string | null = null
+  /** Seen message ids → timestamp — deduplicates poller replay of old frames. */
+  private readonly seenMsgIds = new Map<string, number>()
 
   /** get_updates_buf cursor — persisted for restart continuity. */
   private updatesBuf = ''
@@ -341,11 +346,39 @@ class WeixinAdapter implements ImChannelAdapter {
     }
   }
 
+  /**
+   * Forward an inbound message to the gateway service. Resolved via
+   * `ctx.get('imGateway')` — NOT property access — because the adapter's ctx
+   * is NOT within imGateway's inject scope. Property access throws
+   * `cannot get property "imGateway" without inject` once the message handler
+   * runs outside the boot fiber (see the sync.ts design note). Matches the
+   * pattern already used in remote.ts:saveConfig.
+   */
+  private deliver(msg: ImInboundMessage): Promise<void> {
+    const gw = this.ctx.get('imGateway') as { handleInbound(m: ImInboundMessage): Promise<void> } | undefined
+    return gw ? gw.handleInbound(msg) : Promise.resolve()
+  }
+
   private async handleMessage(msg: WeixinMessage): Promise<void> {
     const fromUserId = msg.from_user_id ?? ''
     if (!fromUserId) return
     // Only inbound USER messages (ignore our own echoes).
     if (msg.message_type === MessageType.BOT) return
+
+    // ── Dedup guard: long-poll may replay buffered frames on reconnect ──
+    const msgId = msg.message_id ?? msg.seq ?? msg.client_id
+    if (msgId != null) {
+      const msgKey = String(msgId)
+      const now = Date.now()
+      for (const [k, ts] of this.seenMsgIds) {
+        if (now - ts > WeixinAdapter.DEDUP_TTL_MS) this.seenMsgIds.delete(k)
+      }
+      if (this.seenMsgIds.has(msgKey)) {
+        this.ctx.logger.debug(`[im-channel-weixin:${this.id}] duplicate message ${msgKey} — skipped`)
+        return
+      }
+      this.seenMsgIds.set(msgKey, now)
+    }
     const text = bodyFromItemList(msg.item_list)
     if (msg.context_token) {
       this.contextTokens.set(this.contextTokenKey(fromUserId), msg.context_token)
@@ -385,8 +418,9 @@ class WeixinAdapter implements ImChannelAdapter {
       userId: fromUserId,
       text,
       images: images.length ? images : undefined,
+      messageId: String(msg.message_id ?? msg.seq ?? msg.client_id ?? ''),
     }
-    void this.ctx.imGateway.handleInbound(message).catch((err) =>
+    void this.deliver(message).catch((err) =>
       this.ctx.logger.error(`[im-channel-weixin:${this.id}] handleInbound failed`, err),
     )
   }
@@ -431,6 +465,18 @@ class WeixinAdapter implements ImChannelAdapter {
     } catch (err) {
       this.ctx.logger.warn(`[im-channel-weixin:${this.id}] sendImage failed: ${String(err)}`)
     }
+  }
+
+  async sendMedia(conversationId: string, filePath: string, caption?: string): Promise<void> {
+    if (!existsSync(filePath)) {
+      this.ctx.logger.warn(`[im-channel-weixin:${this.id}] sendMedia: path does not exist: ${filePath}`)
+      return
+    }
+    if (caption) {
+      await this.sendText(conversationId, caption)
+    }
+    const contextToken = this.contextTokens.get(this.contextTokenKey(conversationId))
+    await this.sendLocalMedia(conversationId, filePath, contextToken)
   }
 
   /**

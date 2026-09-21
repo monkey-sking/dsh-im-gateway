@@ -13,26 +13,30 @@ const CLIENT_EXTERNALS = [
   'react-dom/client',
   '@deepseek-ai/cordis',
   '@deepseek-ai/dsh-client-ui-slots',
-  '@deepseek-ai/dsh-client-web-react',
   '@deepseek-ai/dsh-client-ui-primitives',
   '@deepseek-ai/dsh-client-ui-attachment',
-  '@deepseek-ai/dsh-client-schema-form',
-  '@deepseek-ai/dsh-client-runtime/client',
 ]
 
 /**
- * Host half: ESM library with .d.ts for the SINGLE-entry bundle.
- * Channels are internal modules (src/channels/*) — no standalone entries,
+ * Host half: ESM library with .d.ts.
+ *  - src/index.ts              → lib/index.js (+ .d.ts, package main)
+ *  - src/typert.host.ts        → lib/typert.host.js (+ .d.ts, package ./typert export)
+ *  - src/typert.remote-client.ts → lib/typert.remote-client.js (+ .d.ts, ./remote export)
+ * Channels (src/channels/*) are internal modules — no standalone entries,
  * because the bundle is one plugin whose channels are config sub-objects.
  */
 const hostConfig = {
   entry: [
     'src/index.ts',
+    'src/typert.host.ts',
+    'src/typert.remote-client.ts',
   ],
   format: 'esm',
   outDir: 'lib',
   dts: true,
   clean: true,
+  // Keep ESM output at lib/index.js (no .mjs rename) so package.json main resolves.
+  fixedExtension: false,
 }
 
 /**

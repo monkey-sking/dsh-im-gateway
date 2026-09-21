@@ -10,6 +10,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type { AgentHandle, AgentSetup, ModelSelection, ModelSelectionRef } from '@deepseek-ai/dsh-agent'
+import type { ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import type { ImChannelAdapter, ImGatewayConfig, ImInboundMessage } from './types'
 import type { Translator } from './i18n'
 import { existsSync, statSync } from 'node:fs'
@@ -31,7 +32,7 @@ export interface GatewayHandle {
   attachToWorkspace(sessionId: SessionId, cwd?: string): Promise<void>
   logWorkspaceState(label: string): void
   presetSetup(sessionId: SessionId): AgentSetup
-  currentModelFor(sessionId: SessionId): { provider?: string; model?: string; reasoningEffort?: string } | undefined
+  currentModelFor(sessionId: SessionId): { provider?: string; model?: string; reasoningEffort?: ReasoningEffortId } | undefined
   channelForConv(convKey: string): ImChannelAdapter | undefined
   workspaceOf(convKey: string): string | undefined
   setWorkspace(convKey: string, path: string): void

@@ -20,139 +20,32 @@
  * On save, blank secret fields are merged back from the stored value
  * (in-process describe with redactSecrets:false), so an array
  * wholesale-replace never wipes credentials the user did not retype.
+ *
+ * THE WIRE CONTRACT lives in src/typert.host.ts (exported as ./typert). dsh's
+ * typert-loader imports that module and registers the `TYPERT` manifest into
+ * `ctx.typert` — the official auto-registration path. This file only
+ * instantiates the runtime service below; it must NOT call `ctx.typert.register()`
+ * (that would double-register the same contribution).
  */
 import { Context } from '@deepseek-ai/cordis'
 import { TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
-import type { TypertSchema } from '@deepseek-ai/dsh-typert-protocol'
-import type { TypertRegistry } from '@deepseek-ai/dsh-typert-registry'
-import type { TypertContribution } from '@deepseek-ai/dsh-typert-registry/types'
 import type { ChannelStatus, ImChannelInstance } from './gateway/types'
 import * as qqLogin from './channels/qq-login'
 import * as weixinLogin from './channels/weixin-login'
+import * as dingtalkRegister from './channels/dingtalk-register'
+import * as feishuRegister from './channels/feishu-register'
+import * as wecomRegister from './channels/wecom-register'
 import { syncChannels } from './sync'
 
 const NS = 'im-gateway'
 const SERVICE = 'imGatewayRemote'
-const PACKAGE = '@lijian-ui/dsh-im-gateway'
-
-/** Secret-typed credential keys (mirrors the host Config schema roles). */
-const SECRET_KEYS = new Set(['clientSecret', 'token'])
-
-/** Minimal boundary schema: channels must be an array. */
-const channelsSchema: TypertSchema = {
-  parse(value: unknown): unknown {
-    if (!Array.isArray(value)) throw new Error('channels must be an array')
-    return value
-  },
-}
-
-/** Minimal boundary schema: revision is an optional number. */
-const revisionSchema: TypertSchema = {
-  parse(value: unknown): unknown {
-    if (value === undefined || value === null) return undefined
-    if (typeof value !== 'number') throw new Error('expectedRevision must be a number')
-    return value
-  },
-}
-
-const codec = (typeSymbol: string, schema: TypertSchema) => ({ mode: 'strict' as const, typeSymbol, schema })
 
 /**
- * The typed wire contribution registered with `ctx.typert`. HOST face:
- * the registry expects `face: 'host'` + `invocations` (the client-side
- * `$mount` contribution instead carries `descriptors`).
+ * Secret-typed credential keys (mirrors the host Config schema roles).
+ * `secret` is the WeCom long-connection key — distinct from `clientSecret`
+ * (DingTalk / QQ / Feishu) and `token` (WeChat iLink).
  */
-const CONTRIBUTION = {
-  package: PACKAGE,
-  face: 'host' as const,
-  schemas: [],
-  invocations: [
-    {
-      id: `${PACKAGE}#${SERVICE}/getConfig`,
-      service: SERVICE,
-      namespace: SERVICE,
-      method: 'getConfig',
-      invocation: { kind: 'direct' },
-      parameters: [],
-      result: codec(`${PACKAGE}#ImGatewayConfigView`, { parse: (v) => v }),
-    },
-    {
-      id: `${PACKAGE}#${SERVICE}/saveConfig`,
-      service: SERVICE,
-      namespace: SERVICE,
-      method: 'saveConfig',
-      invocation: { kind: 'direct' },
-      parameters: [
-        { name: 'channels', wire: 'channels', source: 'json', codec: codec(`${PACKAGE}#ChannelsArray`, channelsSchema) },
-        {
-          name: 'expectedRevision',
-          wire: 'expectedRevision',
-          source: 'json',
-          acceptsUndefined: true,
-          codec: codec(`${PACKAGE}#Revision`, revisionSchema),
-        },
-      ],
-      result: codec(`${PACKAGE}#ImGatewayConfigView`, { parse: (v) => v }),
-    },
-    {
-      id: `${PACKAGE}#${SERVICE}/getChannelStatuses`,
-      service: SERVICE,
-      namespace: SERVICE,
-      method: 'getChannelStatuses',
-      invocation: { kind: 'direct' },
-      parameters: [],
-      result: codec(`${PACKAGE}#ChannelStatuses`, { parse: (v) => v }),
-    },
-    {
-      id: `${PACKAGE}#${SERVICE}/startQrLogin`,
-      service: SERVICE,
-      namespace: SERVICE,
-      method: 'startQrLogin',
-      invocation: { kind: 'direct' },
-      parameters: [
-        { name: 'channelType', wire: 'channelType', source: 'json', codec: codec(`${PACKAGE}#ChannelType`, { parse: (v) => v }) },
-      ],
-      result: codec(`${PACKAGE}#QrLoginStatus`, { parse: (v) => v }),
-    },
-    {
-      id: `${PACKAGE}#${SERVICE}/getQrLoginStatus`,
-      service: SERVICE,
-      namespace: SERVICE,
-      method: 'getQrLoginStatus',
-      invocation: { kind: 'direct' },
-      parameters: [
-        { name: 'loginId', wire: 'loginId', source: 'json', codec: codec(`${PACKAGE}#LoginId`, { parse: (v) => v }) },
-      ],
-      result: codec(`${PACKAGE}#QrLoginStatus`, { parse: (v) => v }),
-    },
-    {
-      id: `${PACKAGE}#${SERVICE}/submitQrVerifyCode`,
-      service: SERVICE,
-      namespace: SERVICE,
-      method: 'submitQrVerifyCode',
-      invocation: { kind: 'direct' },
-      parameters: [
-        { name: 'loginId', wire: 'loginId', source: 'json', codec: codec(`${PACKAGE}#LoginId`, { parse: (v) => v }) },
-        { name: 'code', wire: 'code', source: 'json', codec: codec(`${PACKAGE}#VerifyCode`, { parse: (v) => v }) },
-      ],
-      result: codec(`${PACKAGE}#Bool`, { parse: (v) => v }),
-    },
-    {
-      id: `${PACKAGE}#${SERVICE}/cancelQrLogin`,
-      service: SERVICE,
-      namespace: SERVICE,
-      method: 'cancelQrLogin',
-      invocation: { kind: 'direct' },
-      parameters: [
-        { name: 'loginId', wire: 'loginId', source: 'json', codec: codec(`${PACKAGE}#LoginId`, { parse: (v) => v }) },
-      ],
-      result: codec(`${PACKAGE}#Bool`, { parse: (v) => v }),
-    },
-  ],
-  model: { services: [], events: [], objects: [] },
-  // Hand-written contribution: the generated-artifact types (TypertPackageModel
-  // members) are stricter than what a literal can express, so assert the shape.
-} as unknown as TypertContribution
+const SECRET_KEYS = new Set(['clientSecret', 'token', 'secret'])
 
 interface SettingsLike {
   describe(opts: { redactSecrets: boolean }): { ns: string; value?: Record<string, unknown>; revision: number }[]
@@ -203,8 +96,9 @@ function mergeStoredSecrets(
 
 /**
  * The Remote service. Constructing it registers the `imGatewayRemote` cordis
- * service; the contribution above lets the API gateway dispatch the two
- * methods. Plain methods are fine — the descriptors carry the wire contract.
+ * service; the wire contract (src/typert.host.ts) lets the API gateway
+ * dispatch the methods. Plain methods are fine — the descriptors carry the
+ * contract.
  */
 class ImGatewayApi extends TypertRemoteService {
   private readonly settings: SettingsLike
@@ -224,8 +118,6 @@ class ImGatewayApi extends TypertRemoteService {
     channels: ImChannelInstance[],
     expectedRevision?: number,
   ): Promise<{ channels: ImChannelInstance[]; revision: number }> {
-    // Defensive: the wire boundary schema normally rejects non-arrays, but a
-    // direct in-process caller bypasses it.
     if (!Array.isArray(channels)) throw new Error('channels must be an array')
     const merged = mergeStoredSecrets(currentChannels(this.settings), channels)
     await this.settings.update(NS, { channels: merged }, expectedRevision)
@@ -250,7 +142,8 @@ class ImGatewayApi extends TypertRemoteService {
   }
 
   /**
-   * Kick off a QR-scan login for a channel type ('qq' | 'weixin'). Returns
+   * Kick off a QR-scan login for a channel type ('qq' | 'weixin' | 'dingtalk'
+   * | 'feishu' | 'wecom'). Returns
    * `{ status: snapshot }` (the client's generic `call()` spreads the value
    * to the top level, so the snapshot MUST be wrapped in a `status` key —
    * otherwise `res.status` would be the snapshot's `status` string, not the
@@ -260,6 +153,9 @@ class ImGatewayApi extends TypertRemoteService {
     try {
       if (channelType === 'qq') return { status: await qqLogin.startLogin() }
       if (channelType === 'weixin') return { status: await weixinLogin.startLogin() }
+      if (channelType === 'dingtalk') return { status: await dingtalkRegister.startLogin() }
+      if (channelType === 'feishu') return { status: await feishuRegister.startLogin() }
+      if (channelType === 'wecom') return { status: await wecomRegister.startLogin() }
       throw new Error(`unsupported channel type for QR login: ${channelType}`)
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
@@ -282,6 +178,12 @@ class ImGatewayApi extends TypertRemoteService {
     if (qq) return { status: qq }
     const wx = weixinLogin.getLoginStatus(loginId)
     if (wx) return { status: wx }
+    const dd = dingtalkRegister.getLoginStatus(loginId)
+    if (dd) return { status: dd }
+    const fs = feishuRegister.getLoginStatus(loginId)
+    if (fs) return { status: fs }
+    const wc = wecomRegister.getLoginStatus(loginId)
+    if (wc) return { status: wc }
     return { status: null }
   }
 
@@ -294,23 +196,20 @@ class ImGatewayApi extends TypertRemoteService {
   cancelQrLogin(loginId: string): boolean {
     qqLogin.cancelLogin(loginId)
     weixinLogin.cancelLogin(loginId)
+    dingtalkRegister.cancelLogin(loginId)
+    feishuRegister.cancelLogin(loginId)
+    wecomRegister.cancelLogin(loginId)
     return true
   }
 }
 
 /**
- * Register the Remote config service. Called from the bundle apply AFTER the
- * entry's plugin-level `inject: ['typert', 'settings']` guarantee, so both
- * services are live here (synchronous registration, mirroring the official
- * dsh-skill-viewer host: `export const inject = ["typert", ...]`).
+ * Instantiate the Remote config service. Called from the bundle apply.
+ *
+ * The cordis `imGatewayRemote` service must exist for the API gateway to
+ * dispatch invocations; the loader registers the wire contract (src/typert.host.ts,
+ * exported as ./typert) automatically — do NOT register it here again.
  */
 export function registerRemoteApi(ctx: Context): void {
   new ImGatewayApi(ctx)
-  ctx.effect(
-    // The cordis Context merge in dsh-typert-protocol declares only the narrow
-    // TypertRegistryContract (local/remotes/lookups/contexts); the live service
-    // is the full TypertRegistry class whose register() the loader itself uses.
-    () => (ctx.get('typert') as TypertRegistry).register(CONTRIBUTION),
-    `im-gateway: typert contribution ${PACKAGE}`,
-  )
 }

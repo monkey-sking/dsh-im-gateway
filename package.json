@@ -1,8 +1,11 @@
 {
   "name": "@lijian-ui/dsh-im-gateway",
-  "version": "0.2.3",
-  "description": "Multi-channel IM gateway plugin for DeepSeek Harness (dsh): DingTalk / QQ / WeChat(iLink) with QR-scan binding, streaming replies, and a unified ctx.imGateway service. 为 DeepSeek Harness 提供钉钉/QQ/个人微信多 IM 通道接入。",
+  "version": "0.3.0",
+  "description": "Multi-channel IM gateway plugin for DeepSeek Harness (dsh): DingTalk / QQ / WeChat(iLink) / Feishu(Lark) / WeCom with QR-scan binding, streaming replies, and a unified ctx.imGateway service. 为 DeepSeek Harness 提供钉钉/QQ/个人微信/飞书/企业微信多 IM 通道接入。",
   "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
@@ -14,19 +17,31 @@
     "./client": {
       "default": "./lib/client.js"
     },
+    "./typert": {
+      "types": "./lib/typert.host.d.ts",
+      "default": "./lib/typert.host.js"
+    },
+    "./remote": {
+      "types": "./lib/typert.remote-client.d.ts",
+      "default": "./lib/typert.remote-client.js"
+    },
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
   },
   "files": [
     "lib/**/*.js",
     "lib/**/*.d.ts",
+    "lib/typert.host.js",
+    "lib/typert.host.d.ts",
+    "lib/typert.remote-client.js",
+    "lib/typert.remote-client.d.ts",
     "cordis.patch.yml",
     "README.md",
     "README.en.md",
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsdown",
+    "build": "tsdown && node scripts/fix-dts-names.mjs",
     "watch": "tsdown --watch",
     "typecheck": "tsc --noEmit",
     "test": "node --test tests/*.test.mjs",
@@ -41,6 +56,10 @@
     "qq",
     "wechat",
     "weixin",
+    "feishu",
+    "lark",
+    "wecom",
+    "wechat-work",
     "cordis"
   ],
   "repository": {
@@ -62,41 +81,42 @@
     }
   },
   "peerDependencies": {
-    "@deepseek-ai/cordis": "*",
-    "@deepseek-ai/schemastery": "*",
-    "@deepseek-ai/dsh-agent": "0.1.1-rc.2 || 0.1.0-rc.8 || 0.1.0-rc.7 || 0.1.0-rc.6",
-    "@deepseek-ai/dsh-llm": "0.1.1-rc.2 || 0.1.0-rc.8 || 0.1.0-rc.7 || 0.1.0-rc.6",
-    "@deepseek-ai/dsh-session": "0.1.1-rc.2 || 0.1.0-rc.8 || 0.1.0-rc.7 || 0.1.0-rc.6",
-    "@deepseek-ai/dsh-settings": "*",
-    "@deepseek-ai/dsh-typert-protocol": "*",
-    "@deepseek-ai/dsh-user-approval": "0.1.1-rc.2 || 0.1.0-rc.8 || 0.1.0-rc.7 || 0.1.0-rc.6",
-    "@deepseek-ai/dsh-user-questions": "0.1.1-rc.2 || 0.1.0-rc.8 || 0.1.0-rc.7 || 0.1.0-rc.6"
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/dsh-agent": "^0.1.6-alpha.1",
+    "@deepseek-ai/dsh-llm": "^0.1.6-alpha.1",
+    "@deepseek-ai/dsh-session": "^0.1.6-alpha.1",
+    "@deepseek-ai/dsh-settings": "^0.1.6-alpha.1",
+    "@deepseek-ai/dsh-typert-protocol": "^0.1.6-alpha.1",
+    "@deepseek-ai/dsh-user-approval": "^0.1.6-alpha.1",
+    "@deepseek-ai/dsh-user-questions": "^0.1.6-alpha.1"
   },
   "dependencies": {
+    "@deepseek-ai/schemastery": "3.18.2",
+    "@larksuiteoapi/node-sdk": "^1.74.0",
     "@tencent-connect/qqbot-connector": "^1.2.0",
     "@tencent-connect/qqbot-nodejs": "^1.0.4",
+    "@wecom/aibot-node-sdk": "^1.0.7",
     "dingtalk-stream": "^2.1.5",
     "qrcode": "^1.5.4",
     "ws": "^8.18.0"
   },
   "devDependencies": {
-    "@deepseek-ai/cordis": "4.0.1",
-    "@deepseek-ai/dsh-agent": "0.1.1-rc.2",
-    "@deepseek-ai/dsh-api-gateway": "0.1.1-rc.2",
-    "@deepseek-ai/dsh-client-connection": "0.1.1-rc.2",
-    "@deepseek-ai/dsh-client-locale": "0.1.1-rc.2",
-    "@deepseek-ai/dsh-client-runtime": "0.1.1-rc.2",
-    "@deepseek-ai/dsh-client-ui-settings": "0.1.1-rc.2",
-    "@deepseek-ai/dsh-client-ui-settings-plugins": "0.1.1-rc.2",
-    "@deepseek-ai/dsh-client-ui-slots": "0.1.1-rc.2",
-    "@deepseek-ai/dsh-llm": "0.1.1-rc.2",
-    "@deepseek-ai/dsh-session": "0.1.1-rc.2",
-    "@deepseek-ai/dsh-settings": "0.1.1-rc.2",
-    "@deepseek-ai/dsh-typert-protocol": "0.1.1-rc.2",
-    "@deepseek-ai/dsh-typert-registry": "0.1.1-rc.2",
-    "@deepseek-ai/dsh-user-approval": "0.1.1-rc.2",
-    "@deepseek-ai/dsh-user-questions": "0.1.1-rc.2",
-    "@deepseek-ai/schemastery": "3.18.1",
+    "@deepseek-ai/cordis": "4.0.2",
+    "@deepseek-ai/dsh-agent": "0.1.6-alpha.1",
+    "@deepseek-ai/dsh-api-gateway": "0.1.6-alpha.1",
+    "@deepseek-ai/dsh-client-connection": "0.1.6-alpha.1",
+    "@deepseek-ai/dsh-client-locale": "0.1.6-alpha.1",
+    "@deepseek-ai/dsh-client-runtime": "0.1.6-alpha.1",
+    "@deepseek-ai/dsh-client-ui-settings": "0.1.6-alpha.1",
+    "@deepseek-ai/dsh-client-ui-settings-plugins": "0.1.6-alpha.1",
+    "@deepseek-ai/dsh-client-ui-slots": "0.1.6-alpha.1",
+    "@deepseek-ai/dsh-llm": "0.1.6-alpha.1",
+    "@deepseek-ai/dsh-session": "0.1.6-alpha.1",
+    "@deepseek-ai/dsh-settings": "0.1.6-alpha.1",
+    "@deepseek-ai/dsh-typert-protocol": "0.1.6-alpha.1",
+    "@deepseek-ai/dsh-typert-registry": "0.1.6-alpha.1",
+    "@deepseek-ai/dsh-user-approval": "0.1.6-alpha.1",
+    "@deepseek-ai/dsh-user-questions": "0.1.6-alpha.1",
     "@types/node": "^22.0.0",
     "@types/qrcode": "^1.5.5",
     "@types/react": "^18.3.0",

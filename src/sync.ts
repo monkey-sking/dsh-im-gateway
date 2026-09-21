@@ -7,6 +7,8 @@ import { Context } from '@deepseek-ai/cordis'
 import { DingtalkAdapter } from './channels/dingtalk'
 import { QQAdapter } from './channels/qq'
 import { WeixinAdapter } from './channels/weixin'
+import { FeishuAdapter } from './channels/feishu'
+import { WecomAdapter } from './channels/wecom'
 import type {
   ImChannelAdapter,
   ImChannelInstance,
@@ -14,6 +16,8 @@ import type {
   DingtalkChannelConfig,
   QqChannelConfig,
   WeixinChannelConfig,
+  FeishuChannelConfig,
+  WecomChannelConfig,
   ChannelType,
 } from './gateway/types'
 
@@ -44,6 +48,10 @@ function createAdapter(ctx: Context, inst: ImChannelInstance): ImChannelAdapter 
       return new QQAdapter(ctx, inst.config as QqChannelConfig, inst.id, label)
     case 'weixin':
       return new WeixinAdapter(ctx, inst.config as WeixinChannelConfig, inst.id, label)
+    case 'feishu':
+      return new FeishuAdapter(ctx, inst.config as FeishuChannelConfig, inst.id, label)
+    case 'wecom':
+      return new WecomAdapter(ctx, inst.config as WecomChannelConfig, inst.id, label)
     default:
       ctx.logger.warn(`[im-gateway] unknown channel type "${String(inst.type)}" for "${inst.id}"`)
       return null
@@ -55,6 +63,8 @@ function typeLabel(type: ChannelType): string {
     case 'dingtalk': return '钉钉'
     case 'qq': return 'QQ'
     case 'weixin': return '个人微信'
+    case 'feishu': return '飞书'
+    case 'wecom': return '企业微信'
   }
 }
 

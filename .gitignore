@@ -1,11 +1,16 @@
 # dependencies & build output
-node_modules/
-lib/
+# NOTE: no trailing slash on node_modules — a junction/symlink is not a
+# directory to git, so `node_modules/` would NOT match this repo's junction.
+node_modules
+lib
 *.tgz
 
 # misc
 .DS_Store
 *.log
+
+# local assistant workspace (memory notes, scratch probes)
+.workbuddy/
 
 # credentials (never commit auth tokens)
 .npmrc

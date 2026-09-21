@@ -2,7 +2,7 @@
 
 English | [简体中文](./README.md)
 
-> A multi-channel IM gateway plugin for **DeepSeek Harness (dsh)** — connect DingTalk, QQ and WeChat (iLink) bots to your harness agent, with QR-scan binding, streaming replies, tool approval, interactive questions, long-text splitting, multi-segment merge, and bilingual UI.
+> A multi-channel IM gateway plugin for **DeepSeek Harness (dsh)** — connect DingTalk, QQ, WeChat (iLink), Feishu/Lark and WeCom bots to your harness agent, with QR-scan binding, streaming replies, tool approval, interactive questions, long-text splitting, multi-segment merge, and bilingual UI.
 
 [![npm version](https://img.shields.io/npm/v/@lijian-ui/dsh-im-gateway)](https://www.npmjs.com/package/@lijian-ui/dsh-im-gateway)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
@@ -13,13 +13,15 @@ English | [简体中文](./README.md)
 
 ### Channels & Core
 
-- **Unified gateway service** — one plugin, three channels. Every channel routes through a single `ctx.imGateway` core: session management, slash commands, streaming, status broadcast.
+- **Unified gateway service** — one plugin, five channels. Every channel routes through a single `ctx.imGateway` core: session management, slash commands, streaming, status broadcast.
 - **DingTalk** — outbound WebSocket stream connection, group + single chats, @-mention filtering, **AI card streaming** (real-time incremental replies), slash commands.
 - **QQ** — WebSocket gateway (official `qqbot-nodejs` SDK), private (c2c) + group chats, **QR-scan bot binding** (no manual console setup), **streaming messages** (c2c).
 - **WeChat (iLink)** — official iLink long-poll protocol, **QR-scan login + pairing code**, single-chat only, media (AES-128-ECB CDN) in/out.
+- **Feishu / Lark** — official `@larksuiteoapi/node-sdk` long connection (no public callback URL needed), **one-click app creation via QR scan** (scopes & event subscription pre-filled), private + group chats, **CardKit card streaming**, image/file transfer.
+- **WeCom** — official AI-bot WebSocket long connection (no public callback URL, no message encryption), **one-click bot creation via QR scan**, private + group chats, **native streaming bubbles** (`replyStream`, in-place full-content replacement — a first-class platform capability), image/file/voice transfer.
 - **Multi-bot instances** — the same channel type can appear many times (e.g. two DingTalk bots), each with its own credentials.
 - **Settings UI** — a full web settings page ("IM 通道") rendered inside the official dsh web UI; QR-scan binding happens right there.
-- **Streaming replies** — DingTalk AI Card, QQ stream_messages; plain-text fallback when a channel doesn't support streaming.
+- **Streaming replies** — DingTalk AI Card, QQ stream_messages, Feishu CardKit cards, WeCom streaming bubbles; plain-text fallback when a channel doesn't support streaming.
 - **Instance lock** — file-based `DSH_HOME` lock prevents multiple instances from corrupting the session log.
 
 ### Interaction Enhancements
@@ -35,6 +37,7 @@ English | [简体中文](./README.md)
 
 - **Built-in slash commands** — `/help`, `/model`, `/status`, `/new`, `/reset`, `/stop`, `/sessions`, `/continue`, `/workspaces`, `/workspace` (see below).
 - **Session list & continue** — `/sessions` lists recent sessions (with titles); `/continue <id>` resumes a specific session.
+- **Channel-tagged session titles** — sessions created from IM appear in the dsh session list as `[bot name] <smart title>`, so you can tell at a glance which channel a session came from (the bot name is the channel instance's `name`, falling back to the channel type). The title keeps the smart title dsh generates and only gains a prefix; a manual rename in the Web UI is never overwritten.
 - **Workspace management** — `/workspaces` lists all workspaces with session counts; `/workspace <path>` switches workspace (resets the current session; next message creates a new session in the new workspace).
 - **User allowlist** — configure `allowAllUsers` or `allowedUserIds` to control who can use the bot.
 
@@ -83,7 +86,9 @@ dsh --profile web                   # open Settings → "IM 通道" in the brows
 3. Pick a channel type:
    - **QQ**: click **扫码登录** → scan with mobile QQ → credentials auto-fill → save.
    - **个人微信** (WeChat): click **扫码登录** → scan with mobile WeChat → (enter the pairing code if asked) → credentials auto-fill → save.
-   - **钉钉** (DingTalk): fill in AppKey / AppSecret manually (or edit the config file) → save.
+   - **钉钉** (DingTalk): click **扫码登录** to let DingTalk create the bot, or fill in AppKey / AppSecret manually → save.
+   - **飞书 / Lark** (Feishu / Lark): click **扫码登录** → scan with the Feishu app to create an app in one click (scopes & events pre-filled), or fill in App ID / App Secret manually → save.
+   - **企业微信** (WeCom): click **扫码登录** → scan with WeCom to create an AI bot in one click, or fill in Bot ID / Secret manually → save.
 4. Message your bot from the IM client — replies stream back in real time.
 
 > Config is stored under `~/.dsh/settings.yaml` (`im-gateway.channels`). Saving from the UI **hot-reloads** the channels (no restart needed).
@@ -175,6 +180,9 @@ im-gateway:
 | `clientId` / `clientSecret` | dingtalk | DingTalk app key / secret (Stream mode) |
 | `appId` / `clientSecret` | qq | QQ Open Platform credentials (QR-bound) |
 | `token` / `botId` / `baseUrl` / `cdnBaseUrl` | weixin | iLink credentials (QR-bound) |
+| `appId` / `clientSecret` / `domain` | feishu | Feishu / Lark app credentials (QR-created); `domain`: `feishu` or `lark` |
+| `botId` / `secret` | wecom | WeCom AI-bot BotID + long-connection secret (QR-created) |
+| `groupPolicy` / `groupAllowFrom` / `groups` | qq · feishu · wecom | Group message policy: `open` / `allowlist` / `disabled` |
 | `enabled` | all | Whether this instance connects |
 
 ---
@@ -182,7 +190,7 @@ im-gateway:
 ## Architecture
 
 ```
-IM client ──► channel adapter (dingtalk / qq / weixin)
+IM client ──► channel adapter (dingtalk / qq / weixin / feishu / wecom)
                     │  ImInboundMessage
                     ▼
               ctx.imGateway (core)
@@ -190,10 +198,11 @@ IM client ──► channel adapter (dingtalk / qq / weixin)
                     │  ensureSession → agent.followup
                     ▼
              dsh harness agent (LLM loop)
-                    │  session events (turn/start, assistant/chunk, tool/call, turn/end)
+                    │  session events (turn/start, assistant/message, tool/call, turn/end)
+                    │  live stream    (agent/assistant-stream: text-delta chunks)
                     ▼
          EventDispatcher → streaming reply / splitting / tool hints
-                    │  (AI Card / stream_messages / plain text fallback)
+                    │  (AI Card / stream_messages / CardKit / streaming bubble / plain text fallback)
                     ▼
                  IM client
 ```
@@ -204,6 +213,7 @@ IM client ──► channel adapter (dingtalk / qq / weixin)
 | --- | --- |
 | `im-gateway.ts` | Core service ImGatewayService: session management, message routing, tool registration |
 | `events.ts` | EventDispatcher: SessionEvent → IM channel operations (streaming, splitting, tool hints) |
+| `session-title.ts` | prefixSessionTitle: tag IM session titles with `[bot name] ` (via the official sessionTitle.rename) |
 | `commands.ts` | CommandHandler: slash commands (/help /reset /model /status /stop /sessions /continue /workspaces /workspace) |
 | `stream.ts` | StreamThrottle: batch text-delta and push at intervals |
 | `approval.ts` | ApprovalBroker: tool approval bridge, holds approval/request pending IM reply |
@@ -214,7 +224,7 @@ IM client ──► channel adapter (dingtalk / qq / weixin)
 | `instance-lock.ts` | acquireInstanceLock: DSH_HOME file lock, prevents concurrent session log corruption |
 | `types.ts` | Interface definitions: ImChannelAdapter, ImGatewayConfig, ImGateway, etc. |
 
-- **Host half** (node): `src/index.ts` (apply), `src/gateway/` (core + above modules), `src/channels/` (dingtalk / qq / weixin + protocol helpers), `src/remote.ts` (Typert RPC for the settings UI), `src/sync.ts` (channel reload on config save).
+- **Host half** (node): `src/index.ts` (apply), `src/gateway/` (core + above modules), `src/channels/` (dingtalk / qq / weixin / feishu / wecom + protocol helpers), `src/remote.ts` (Typert RPC for the settings UI), `src/sync.ts` (channel reload on config save).
 - **Client half** (browser): `src/client/` — settings page "IM 通道" (add/edit modal + QR-scan login + status dots).
 - **Multi-bot**: `channels` is an array; the same `type` may appear multiple times.
 

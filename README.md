@@ -2,7 +2,7 @@
 
 [English](./README.en.md) | 简体中文
 
-> 为 **DeepSeek Harness (dsh)** 提供多 IM 通道接入的网关插件：钉钉 / QQ / 个人微信，支持扫码绑定、流式回复、工具审批、交互提问、长文本分片、多段合并、双语界面。
+> 为 **DeepSeek Harness (dsh)** 提供多 IM 通道接入的网关插件：钉钉 / QQ / 个人微信 / 飞书 / 企业微信，支持扫码绑定、流式回复、工具审批、交互提问、长文本分片、多段合并、双语界面。
 
 [![npm version](https://img.shields.io/npm/v/@lijian-ui/dsh-im-gateway)](https://www.npmjs.com/package/@lijian-ui/dsh-im-gateway)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
@@ -13,13 +13,15 @@
 
 ### 通道与核心
 
-- **统一网关服务** — 一个插件、三个通道。所有通道都汇聚到单一的 `ctx.imGateway` 核心：会话管理、斜杠命令、流式回复、状态广播。
+- **统一网关服务** — 一个插件、五个通道。所有通道都汇聚到单一的 `ctx.imGateway` 核心：会话管理、斜杠命令、流式回复、状态广播。
 - **钉钉** — 出站 WebSocket 长连接，群聊 + 单聊，@ 提及过滤，**AI 卡片流式输出**（实时增量回复），斜杠命令。
 - **QQ** — WebSocket 网关（官方 `qqbot-nodejs` SDK），私聊（c2c）+ 群聊，**扫码绑定机器人**（免去开放平台手动创建），**流式消息**（c2c）。
 - **个人微信（iLink）** — 官方 iLink 长轮询协议，**扫码登录 + 配对码**，仅单聊，媒体（AES-128-ECB CDN）收发。
+- **飞书 / Lark** — 官方 `@larksuiteoapi/node-sdk` 长连接（无需公网回调），**扫码一键创建应用**（权限与会话事件自动预填），私聊 + 群聊，**CardKit 卡片流式输出**，图片/文件收发。
+- **企业微信** — 官方智能机器人 WebSocket 长连接（无需公网回调、无需消息加解密），**扫码一键创建机器人**，私聊 + 群聊，**原生流式气泡**（`replyStream` 原位替换，官方原生能力），图片/文件/语音收发。
 - **多机器人实例** — 同一通道类型可配置多个实例（例如两个钉钉机器人），各自独立凭据。
 - **设置页 UI** — 在官方 dsh web UI 内渲染完整的设置页（「IM 通道」），扫码绑定就在这里完成。
-- **流式回复** — 钉钉 AI 卡片、QQ stream_messages；渠道不支持流式时自动回退纯文本。
+- **流式回复** — 钉钉 AI 卡片、QQ stream_messages、飞书 CardKit 卡片、企业微信流式气泡；渠道不支持流式时自动回退纯文本。
 - **单例锁** — 通过 `DSH_HOME` 文件锁防止多个实例并发写坏 session log。
 
 ### 交互增强
@@ -35,6 +37,7 @@
 
 - **内置斜杠命令** — `/help`、`/model`、`/status`、`/new`、`/reset`、`/stop`、`/sessions`、`/continue`、`/workspaces`、`/workspace`（见下文）。
 - **会话列表与继续** — `/sessions` 列出最近会话（含标题），`/continue <id>` 恢复指定会话。
+- **会话标题带通道标识** — 来自 IM 的会话在 dsh 会话列表中自动显示为 `[机器人名] 智能标题`，一眼分辨会话来自哪个通道（机器人名取通道实例的 `name`，未填则回落到通道类型名）。标题沿用 dsh 官方生成的智能标题，只在前面加前缀；在 Web 端手动重命名后不再自动覆盖。
 - **工作区管理** — `/workspaces` 列出所有工作区及会话数，`/workspace <路径>` 切换工作区（自动重置当前会话，下次消息在新工作区创建新会话）。
 - **用户白名单** — 配置 `allowAllUsers` 或 `allowedUserIds` 精确控制谁可以使用机器人。
 
@@ -83,7 +86,9 @@ dsh --profile web                   # 启动后浏览器打开设置 → 「IM �
 3. 选择通道类型：
    - **QQ**：点击**扫码登录** → 手机 QQ 扫码 → 凭据自动填入 → 保存。
    - **个人微信**：点击**扫码登录** → 手机微信扫码 →（如要求则输入配对码）→ 凭据自动填入 → 保存。
-   - **钉钉**：手动填写 AppKey / AppSecret（或直接编辑配置文件）→ 保存。
+   - **钉钉**：点击**扫码登录**由钉钉自动创建机器人，或手动填写 AppKey / AppSecret → 保存。
+   - **飞书 / Lark**：点击**扫码登录** → 飞书 App 扫码一键创建应用（权限与会话事件已预填），或手动填写 App ID / App Secret → 保存。
+   - **企业微信**：点击**扫码登录** → 企业微信扫码一键创建智能机器人，或手动填写 Bot ID / Secret → 保存。
 4. 在 IM 客户端给机器人发消息 — 回复实时流式返回。
 
 > 配置存储在 `~/.dsh/settings.yaml`（`im-gateway.channels`）。在 UI 保存配置会**热重载**通道（无需重启）。
@@ -150,7 +155,9 @@ im-gateway:
       config:
         clientId: "..."
         clientSecret: "..."
-        # callbackBaseUrl, appId, botAppId, baseUrl, botId, cdnBaseUrl, pollIntervalMs...
+        # 其余字段按通道类型取用：callbackBaseUrl / appId / botAppId / baseUrl /
+        # botId / cdnBaseUrl / pollIntervalMs / domain（飞书）/ secret（企业微信）/
+        # groupPolicy / groupAllowFrom / groups
 ```
 
 ### 网关级配置
@@ -173,6 +180,9 @@ im-gateway:
 | `clientId` / `clientSecret` | dingtalk | 钉钉应用 key / secret（Stream 模式） |
 | `appId` / `clientSecret` | qq | QQ 开放平台凭据（扫码绑定所得） |
 | `token` / `botId` / `baseUrl` / `cdnBaseUrl` | weixin | iLink 凭据（扫码绑定所得） |
+| `appId` / `clientSecret` / `domain` | feishu | 飞书 / Lark 应用凭据（扫码创建所得）；`domain`：`feishu`（中国版）或 `lark`（国际版） |
+| `botId` / `secret` | wecom | 企业微信智能机器人 BotID + 长连接专用密钥（扫码创建所得） |
+| `groupPolicy` / `groupAllowFrom` / `groups` | qq · feishu · wecom | 群消息策略：`open` 全响应 / `allowlist` 白名单 / `disabled` 不响应 |
 | `enabled` | 全部 | 该实例是否连接 |
 
 ---
@@ -180,7 +190,7 @@ im-gateway:
 ## 架构
 
 ```
-IM 客户端 ──► 通道适配器 (dingtalk / qq / weixin)
+IM 客户端 ──► 通道适配器 (dingtalk / qq / weixin / feishu / wecom)
                    │  ImInboundMessage
                    ▼
              ctx.imGateway（核心）
@@ -188,7 +198,8 @@ IM 客户端 ──► 通道适配器 (dingtalk / qq / weixin)
                    │  ensureSession → agent.followup
                    ▼
             dsh harness agent（LLM 循环）
-                   │  会话事件 (turn/start, assistant/chunk, tool/call, turn/end)
+                   │  会话事件 (turn/start, assistant/message, tool/call, turn/end)
+                   │  实时流   (agent/assistant-stream: text-delta 增量)
                    ▼
         EventDispatcher → 流式回复 / 分片 / 工具提示
                    │  (AI 卡片 / stream_messages / 纯文本回退)
@@ -202,6 +213,7 @@ IM 客户端 ──► 通道适配器 (dingtalk / qq / weixin)
 | --- | --- |
 | `im-gateway.ts` | 核心服务 ImGatewayService：会话管理、消息路由、工具注册 |
 | `events.ts` | EventDispatcher：SessionEvent → IM 渠道操作（流式、分片、工具提示） |
+| `session-title.ts` | prefixSessionTitle：给 IM 会话标题加 `[机器人名] ` 前缀（走官方 sessionTitle.rename） |
 | `commands.ts` | CommandHandler：斜杠命令处理（/help /reset /model /status /stop /sessions /continue /workspaces /workspace） |
 | `stream.ts` | StreamThrottle：流式节流器，攒批 text-delta 后按间隔推送 |
 | `approval.ts` | ApprovalBroker：工具审批桥，挂起 approval/request 等待 IM 回复 |
@@ -212,7 +224,7 @@ IM 客户端 ──► 通道适配器 (dingtalk / qq / weixin)
 | `instance-lock.ts` | acquireInstanceLock：DSH_HOME 文件锁，防止并发写坏 session log |
 | `types.ts` | 接口定义：ImChannelAdapter、ImGatewayConfig、ImGateway 等 |
 
-- **Host 半**（node）：`src/index.ts`（apply）、`src/gateway/`（核心 + 上述模块）、`src/channels/`（dingtalk / qq / weixin + 协议助手）、`src/remote.ts`（设置页的 Typert RPC）、`src/sync.ts`（保存配置后热重载通道）。
+- **Host 半**（node）：`src/index.ts`（apply）、`src/gateway/`（核心 + 上述模块）、`src/channels/`（dingtalk / qq / weixin / feishu / wecom + 协议助手）、`src/remote.ts`（设置页的 Typert RPC）、`src/sync.ts`（保存配置后热重载通道）。
 - **Client 半**（浏览器）：`src/client/` — 设置页「IM 通道」（添加/编辑弹窗 + 扫码登录 + 状态点）。
 - **多机器人**：`channels` 是数组，同一 `type` 可多次出现。
 

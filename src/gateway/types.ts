@@ -11,6 +11,36 @@ export interface ImImage {
   data: string
 }
 
+/**
+ * An outbound voice/audio payload. Exactly one source should be set; adapters
+ * pick the first available in the order `localPath` → `url` → `base64`.
+ */
+export interface ImVoice {
+  /** Local audio file path (wav/mp3/silk…). */
+  localPath?: string
+  /** Remote audio URL. */
+  url?: string
+  /** Raw base64 audio bytes WITHOUT the `data:` prefix. */
+  base64?: string
+}
+
+/**
+ * Extra options for `sendText`.
+ */
+export interface SendTextOptions {
+  /**
+   * Channel-native id of the inbound message being answered. When set, channels
+   * that support quoting (QQ) attach it so the reply references the user's
+   * message instead of being a standalone push.
+   */
+  replyToId?: string
+  /**
+   * Skip outbound text sanitisation (scaffolding-tag stripping). Reserved for
+   * callers that already produced clean text and must preserve it byte-exact.
+   */
+  raw?: boolean
+}
+
 /** A normalized inbound message coming from any channel. */
 export interface ImInboundMessage {
   /** Channel id, e.g. 'dingtalk'. Must match the adapter's `id`. */
@@ -27,6 +57,30 @@ export interface ImInboundMessage {
   senderNick?: string
   /** Whether the inbound arrived in a group conversation. */
   isGroup?: boolean
+  /**
+   * Channel-native message id — populated by adapters so the gateway can
+   * deduplicate concurrent adapter instances (dev HMR reloads, reconnect
+   * races, etc.). When absent the gateway falls back to a heuristic key.
+   */
+  messageId?: string
+}
+
+/**
+ * Structured approval request rendered by a channel that supports inline
+ * keyboard buttons (e.g. QQ c2c/group). `actions[].id` MUST be a value the
+ * gateway already recognizes as a verdict keyword (`allow` / `reject` / …),
+ * because clicking a button routes back through `handleInbound` as that text
+ * and is consumed by the pending approval broker.
+ */
+export interface ApprovalRequest {
+  /** Title line (e.g. "⚠️ 批准请求（120s 内回复「批准」或「拒绝」）"). */
+  title: string
+  /** Body lines (tool name + reason). Plain text, no markdown. */
+  body: string
+  /** Timeout in seconds (informational; the broker enforces the real limit). */
+  timeoutSecs: number
+  /** Action buttons. id = keyword the gateway matches; label = button text. */
+  actions: Array<{ id: string; label: string; style?: number }>
 }
 
 /** Runtime status of a channel connection, surfaced to the settings UI. */
@@ -40,8 +94,8 @@ export interface ChannelStatus {
 }
 
 /**
- * A channel adapter. Each IM backend (DingTalk / QQ / Weixin) implements this
- * and registers itself via `ctx.imGateway.registerChannel(adapter)`.
+ * A channel adapter. Each IM backend (DingTalk / QQ / Weixin / Feishu / WeCom)
+ * implements this and registers itself via `ctx.imGateway.registerChannel(adapter)`.
  *
  * Lifecycle: the gateway calls `start()` once the core service is active and
  * `stop()` on teardown. The adapter pushes inbound messages back through
@@ -59,11 +113,23 @@ export interface ImChannelAdapter {
   /** Disconnect and release resources. */
   stop(): Promise<void> | void
   /** Push a text reply to a conversation. */
-  sendText(conversationId: string, text: string): Promise<void>
+  sendText(conversationId: string, text: string, options?: SendTextOptions): Promise<void>
   /** Push an image reply. Optional — channels without media support may omit. */
   sendImage?(conversationId: string, image: ImImage): Promise<void>
   /** Push a file/media reply. Optional — channels without file support may omit. */
   sendMedia?(conversationId: string, filePath: string, caption?: string): Promise<void>
+  /**
+   * Push a voice/audio reply from an existing audio source (local file / URL /
+   * base64). Optional — channels without voice support may omit.
+   */
+  sendVoice?(conversationId: string, voice: ImVoice): Promise<void>
+  /**
+   * Synthesize speech for `text` and return a sendable voice payload (or null
+   * when TTS is unavailable/failed). Channels that own a TTS engine implement
+   * this so the gateway's `im_send_voice` tool works; otherwise the tool falls
+   * back to plain text.
+   */
+  synthesizeVoice?(text: string): Promise<ImVoice | null>
   /** Whether the adapter is currently connected. */
   isActive(): boolean
   /**
@@ -84,6 +150,15 @@ export interface ImChannelAdapter {
   beginStream?(conversationId: string): Promise<void>
   streamText?(conversationId: string, text: string, finished?: boolean): Promise<void>
   endStream?(conversationId: string, text: string): Promise<void>
+  /**
+   * Optional structured approval UI. When an `approval/request` is pending and
+   * the channel implements this, the gateway renders inline-keyboard buttons
+   * instead of a plain-text prompt. The channel must echo each button's `id`
+   * back via `handleInbound` (as text) when clicked, so the gateway can
+   * recognize it as the verdict keyword (`allow` / `reject`). Channels without
+   * this method fall back to the plain-text prompt + keyword reply.
+   */
+  sendApprovalRequest?(conversationId: string, payload: ApprovalRequest): Promise<void>
   /**
    * Optional pre-filter. Called by the gateway for every inbound message
    * BEFORE it is forwarded to the agent. Return `true` to suppress forwarding
@@ -115,11 +190,93 @@ export interface DingtalkChannelConfig {
   callbackBaseUrl: string
 }
 
+/** 群消息策略：open=全响应 | allowlist=白名单 | disabled=不响应。 */
+export type GroupPolicy = 'open' | 'allowlist' | 'disabled'
+
+/** 工具策略：full=全部 | restricted=限制修改类工具 | none=禁止调用工具。 */
+export type ToolPolicy = 'full' | 'restricted' | 'none'
+
+/**
+ * 单个群的策略配置。解析优先级：具体群 > `groups['*']` > 账号默认。
+ */
+export interface GroupConfig {
+  /** 是否需要 @机器人才响应（默认取账号级 defaultRequireMention）。 */
+  requireMention?: boolean
+  /** 是否丢弃「@了别人但没 @机器人」的消息（默认 false）。 */
+  ignoreOtherMentions?: boolean
+  /** 群内可用工具范围（默认 full，保持向后兼容）。 */
+  toolPolicy?: ToolPolicy
+  /** 群名称 —— 注入到消息前缀，便于模型分辨群。 */
+  name?: string
+  /** 群行为提示（PE），注入到消息前缀。 */
+  prompt?: string
+}
+
+/**
+ * 出站语音（TTS）配置。OpenAI 兼容的 `POST {baseUrl}/audio/speech`。
+ * 未配置（或 enabled=false）时渠道不支持语音输出，`im_send_voice` 降级为文本。
+ */
+export interface TtsConfig {
+  enabled: boolean
+  /** 服务地址，如 https://api.openai.com/v1（会自动拼接 /audio/speech）。 */
+  baseUrl: string
+  /** API Key（可选，留空则不带 Authorization）。 */
+  apiKey?: string
+  /** 模型名，如 tts-1 / gpt-4o-mini-tts。 */
+  model?: string
+  /** 音色名，如 alloy / zh-CN-XiaoxiaoNeural。 */
+  voice?: string
+  /** 返回格式：mp3 / wav / opus（QQ 语音支持 wav/mp3/silk）。 */
+  format?: string
+}
+
 /** QQ channel credentials (per instance). */
 export interface QqChannelConfig {
   appId: string
   clientSecret: string
   botAppId: string
+  /**
+   * 出站消息是否引用用户消息（被动回复）。默认 true —— 回复会挂在用户消息下方。
+   * 长回复只有首片引用，其余片走主动推送以避开单条 inbound 的被动回复配额。
+   */
+  quoteReply?: boolean
+  /** 群消息策略（默认 open）。 */
+  groupPolicy?: GroupPolicy
+  /** 群白名单（groupPolicy=allowlist 时生效；支持 '*' 通配）。 */
+  groupAllowFrom?: string[]
+  /** 群消息是否默认需要 @机器人（默认 true）。 */
+  defaultRequireMention?: boolean
+  /** 按群配置，key 为 groupOpenid，'*' 为通配。 */
+  groups?: Record<string, GroupConfig>
+  /** 出站语音（TTS）配置；未配置则不支持语音输出。 */
+  tts?: TtsConfig
+}
+
+/**
+ * 飞书 / Lark channel credentials (per instance).
+ *
+ * 连接方式为 WebSocket 长连接（`im.message.receive_v1` 事件订阅），不需要公网
+ * 回调地址；`appId` / `clientSecret` 可手填，也可由扫码一键创建自动填入
+ * （feishu-register.ts）。
+ */
+export interface FeishuChannelConfig {
+  appId: string
+  clientSecret: string
+  /** 平台域名：feishu=中国版(feishu.cn) | lark=国际版(larksuite.com)。默认 feishu。 */
+  domain?: 'feishu' | 'lark'
+  /**
+   * 出站消息是否引用用户消息（默认 true）——回复挂在用户消息下方。
+   * 长回复只有首片引用，其余片走主动推送。
+   */
+  quoteReply?: boolean
+  /** 群消息策略（默认 open）。 */
+  groupPolicy?: GroupPolicy
+  /** 群白名单（groupPolicy=allowlist 时生效；支持 '*' 通配）。 */
+  groupAllowFrom?: string[]
+  /** 群消息是否默认需要 @机器人（默认 true）。 */
+  defaultRequireMention?: boolean
+  /** 按群配置，key 为群 chat_id（oc_xxx），'*' 为通配。 */
+  groups?: Record<string, GroupConfig>
 }
 
 /** 微信(iLink) channel credentials (per instance). */
@@ -136,12 +293,37 @@ export interface WeixinChannelConfig {
 }
 
 /**
+ * 企业微信「智能机器人」channel credentials (per instance).
+ *
+ * 连接方式为官方 WebSocket 长连接（无需公网回调地址、无需消息加解密）；
+ * `botId` / `secret` 可手填，也可由扫码一键创建自动填入（wecom-register.ts）。
+ *
+ * 注意 `secret` 是**长连接专用密钥**，与「设置接收消息回调地址」模式的
+ * Token / EncodingAESKey 不是一回事。
+ */
+export interface WecomChannelConfig {
+  /** 智能机器人 BotID。 */
+  botId: string
+  /** 长连接专用密钥。 */
+  secret: string
+  /**
+   * 群消息策略（默认 open）。企业微信平台侧只投递「@机器人」的群消息，
+   * 因此没有 `defaultRequireMention` —— 是否需要被 @ 不由本网关决定。
+   */
+  groupPolicy?: GroupPolicy
+  /** 群白名单（groupPolicy=allowlist 时生效；支持 '*' 通配）。 */
+  groupAllowFrom?: string[]
+  /** 按群配置，key 为群 chatid，'*' 为通配。 */
+  groups?: Record<string, GroupConfig>
+}
+
+/**
  * One IM robot instance. The same channel TYPE may appear many times — e.g.
  * two DingTalk bots with different credentials — each with its own unique
  * `id` (e.g. `dingtalk-main`, `qq-7f3a`). `id` MUST NOT contain ':' because
  * the gateway builds `convKey = channelId:conversationId`.
  */
-export type ChannelType = 'dingtalk' | 'qq' | 'weixin'
+export type ChannelType = 'dingtalk' | 'qq' | 'weixin' | 'feishu' | 'wecom'
 
 export interface ImChannelInstance {
   /** Unique instance id, `<type>-<slug>` — used as the adapter registry key. */
@@ -152,7 +334,7 @@ export interface ImChannelInstance {
   name: string
   enabled: boolean
   /** Credential fields for this instance (shape depends on `type`). */
-  config: DingtalkChannelConfig & Partial<QqChannelConfig> & Partial<WeixinChannelConfig>
+  config: DingtalkChannelConfig & Partial<QqChannelConfig> & Partial<WeixinChannelConfig> & Partial<FeishuChannelConfig> & Partial<WecomChannelConfig>
 }
 
 export interface ImGatewayConfig {

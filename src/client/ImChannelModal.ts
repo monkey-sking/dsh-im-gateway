@@ -24,7 +24,7 @@ import type { ConfigApi, QrLoginStatus } from './config-api.ts'
 export const BUNDLE_NS = 'im-gateway'
 
 /** Channel type literal (must mirror the host-side ChannelType). */
-export type ChannelType = 'dingtalk' | 'qq' | 'weixin'
+export type ChannelType = 'dingtalk' | 'qq' | 'weixin' | 'feishu' | 'wecom'
 
 /** One channel instance, as stored in `channels[]` (host: ImChannelInstance). */
 export interface ImChannelInstance {
@@ -35,20 +35,20 @@ export interface ImChannelInstance {
   config: Record<string, unknown>
 }
 
-/** Display label per channel type. */
-export const TYPE_LABELS: Record<string, string> = {
-  dingtalk: '钉钉',
-  qq: 'QQ',
-  weixin: '个人微信',
-}
-
-/** Display order of the type groups on the page. */
-export const TYPE_ORDER: ChannelType[] = ['dingtalk', 'qq', 'weixin']
+/**
+ * Display order of the channel types — the SINGLE source of truth for ordering.
+ * Drives both the type picker in the add/edit modal and the type groups on the
+ * list page, so the two can never drift apart. Labels come from the i18n keys
+ * (`type.*`), not from a local map.
+ */
+export const TYPE_ORDER: ChannelType[] = ['dingtalk', 'qq', 'feishu', 'weixin', 'wecom']
 
 /**
  * Credential fields per channel type. qq / weixin are QR-scan bound: their
  * fields are HIDDEN from the form (the QR flow fills them), but the keys are
  * still needed to initialize/save values. dingtalk stays a manual form.
+ * feishu / wecom support BOTH: scan-to-create fills them, and they stay
+ * visible as a manual fallback (existing / enterprise self-built apps).
  */
 const TYPE_FIELDS: Record<string, { key: string; label: string; secret?: boolean; type?: string }[]> = {
   dingtalk: [
@@ -57,6 +57,14 @@ const TYPE_FIELDS: Record<string, { key: string; label: string; secret?: boolean
   ],
   qq: [],
   weixin: [],
+  feishu: [
+    { key: 'appId', label: 'App ID (cli_xxx)' },
+    { key: 'clientSecret', label: 'App Secret', secret: true },
+  ],
+  wecom: [
+    { key: 'botId', label: 'Bot ID' },
+    { key: 'secret', label: 'Secret', secret: true },
+  ],
 }
 
 /** Every credential key per type — used to init/persist QR-hidden values. */
@@ -64,6 +72,8 @@ const TYPE_CREDENTIAL_KEYS: Record<string, string[]> = {
   dingtalk: ['clientId', 'clientSecret'],
   qq: ['appId', 'clientSecret', 'botAppId'],
   weixin: ['token', 'botId', 'baseUrl', 'cdnBaseUrl'],
+  feishu: ['appId', 'clientSecret', 'domain'],
+  wecom: ['botId', 'secret'],
 }
 
 export interface ChannelDraft {
@@ -202,32 +212,6 @@ const footer: React.CSSProperties = {
   flexShrink: 0,
 }
 
-const btnGhost: React.CSSProperties = {
-  height: 36,
-  padding: '0 16px',
-  background: 'transparent',
-  color: 'var(--dsw-alias-label-secondary)',
-  border: '1px solid var(--dsw-alias-border-l2)',
-  borderRadius: 8,
-  cursor: 'pointer',
-  fontSize: 13,
-}
-
-const btnPrimary: React.CSSProperties = {
-  display: 'inline-flex',
-  alignItems: 'center',
-  gap: 6,
-  height: 36,
-  padding: '0 18px',
-  background: 'var(--dsw-alias-state-business-primary)',
-  color: 'var(--dsw-alias-label-primary-foreground)',
-  border: 'none',
-  borderRadius: 8,
-  cursor: 'pointer',
-  fontSize: 13,
-  fontWeight: 500,
-}
-
 // ── QR-scan login styles ──
 
 const qrBox: React.CSSProperties = {
@@ -277,6 +261,30 @@ const qrLink: React.CSSProperties = {
   whiteSpace: 'nowrap',
 }
 
+/**
+ * QR-box copy per channel type and state. Kept as one helper instead of nested
+ * ternaries at each call site — the modal renders the same three variants
+ * (idle hint / already-bound / not-bound) for every scannable channel.
+ */
+function qrCopy(
+  t: TranslateNS<'im-gateway'>,
+  kind: 'hint' | 'bound' | 'unbound',
+  type: string,
+): string {
+  switch (type) {
+    case 'qq':
+      return kind === 'hint' ? t('qr.qqHint') : kind === 'bound' ? t('qr.bound.qq') : t('qr.unbound.qq')
+    case 'weixin':
+      return kind === 'hint' ? t('qr.weixinHint') : kind === 'bound' ? t('qr.bound.weixin') : t('qr.unbound.weixin')
+    case 'feishu':
+      return kind === 'hint' ? t('qr.feishuHint') : kind === 'bound' ? t('qr.bound.feishu') : t('qr.unbound.feishu')
+    case 'wecom':
+      return kind === 'hint' ? t('qr.wecomHint') : kind === 'bound' ? t('qr.bound.wecom') : t('qr.unbound.wecom')
+    default:
+      return kind === 'hint' ? t('qr.dingtalkHint') : kind === 'bound' ? t('qr.bound.dingtalk') : t('qr.unbound.dingtalk')
+  }
+}
+
 /** Mint a unique instance id: `<type>-<rand>` (never contains ':'). */
 export function mintInstanceId(type: string, existing: ImChannelInstance[]): string {
   for (let i = 0; i < 50; i++) {
@@ -296,7 +304,12 @@ export function ImChannelModal(props: ImChannelModalProps) {
 
   /** Translate a channel type to its display label. */
   const typeLabel = (tp: string): string =>
-    tp === 'dingtalk' ? t('type.dingtalk') : tp === 'qq' ? t('type.qq') : tp === 'weixin' ? t('type.weixin') : tp
+    tp === 'dingtalk' ? t('type.dingtalk')
+      : tp === 'qq' ? t('type.qq')
+        : tp === 'weixin' ? t('type.weixin')
+          : tp === 'feishu' ? t('type.feishu')
+            : tp === 'wecom' ? t('type.wecom')
+              : tp
 
   const editing = editId !== undefined ? instances.find((inst) => inst.id === editId) : undefined
   const initialType = (editing?.type ?? 'dingtalk') as string
@@ -361,6 +374,20 @@ export function ImChannelModal(props: ImChannelModalProps) {
         if (qr.credentials.botId) next.botId = qr.credentials.botId
         if (qr.credentials.baseUrl) next.baseUrl = qr.credentials.baseUrl
       }
+      if (type === 'dingtalk' && qr.credentials) {
+        if (qr.credentials.clientId) next.clientId = qr.credentials.clientId
+        if (qr.credentials.clientSecret) next.clientSecret = qr.credentials.clientSecret
+      }
+      if (type === 'feishu' && qr.credentials) {
+        if (qr.credentials.appId) next.appId = qr.credentials.appId
+        if (qr.credentials.clientSecret) next.clientSecret = qr.credentials.clientSecret
+        // 扫码创建的可能是国际版 Lark 应用 —— 由 tenant_brand 判定后回填。
+        if (qr.credentials.domain) next.domain = qr.credentials.domain
+      }
+      if (type === 'wecom' && qr.credentials) {
+        if (qr.credentials.botId) next.botId = qr.credentials.botId
+        if (qr.credentials.secret) next.secret = qr.credentials.secret
+      }
       return next
     })
   }, [qr, type])
@@ -404,6 +431,15 @@ export function ImChannelModal(props: ImChannelModalProps) {
     if (type === 'weixin') {
       return (values['token'] ?? '').trim() !== '' && (values['botId'] ?? '').trim() !== ''
     }
+    if (type === 'dingtalk') {
+      return (values['clientId'] ?? '').trim() !== '' && (values['clientSecret'] ?? '').trim() !== ''
+    }
+    if (type === 'feishu') {
+      return (values['appId'] ?? '').trim() !== '' && (values['clientSecret'] ?? '').trim() !== ''
+    }
+    if (type === 'wecom') {
+      return (values['botId'] ?? '').trim() !== '' && (values['secret'] ?? '').trim() !== ''
+    }
     return false
   }, [values, type])
 
@@ -441,12 +477,22 @@ export function ImChannelModal(props: ImChannelModalProps) {
     if (!canSave || !type) return
     setSaving(true)
     setError('')
-    // All credential keys (including QR-hidden ones) → config. Number fields
-    // → numbers; everything else stays string.
-    const config: Record<string, unknown> = {}
+    // Start from the stored config so NON-credential fields this form does not
+    // surface (feishu.domain / quoteReply / groupPolicy / groups, qq tts …)
+    // survive a wholesale-array save. Credential keys are then overwritten
+    // below; blank secrets are restored host-side (remote.ts mergeStoredSecrets).
+    const config: Record<string, unknown> = { ...((editing?.config ?? {}) as Record<string, unknown>) }
     for (const key of credentialKeys) {
       const raw = (values[key] ?? '').trim()
       const fieldMeta = TYPE_FIELDS[type]?.find((f) => f.key === key)
+      // Keys with no visible form field (QR-derived — e.g. feishu.domain) must
+      // be OMITTED when empty: writing '' into the 'feishu'|'lark' union fails
+      // schema validation and blocks the save, whereas omitting the key lets
+      // the schema default apply.
+      if (fieldMeta === undefined && raw === '') {
+        delete config[key]
+        continue
+      }
       if (fieldMeta?.type === 'number') config[key] = raw === '' ? '' : Number(raw)
       else config[key] = raw
     }
@@ -473,8 +519,10 @@ export function ImChannelModal(props: ImChannelModalProps) {
     }
   }
 
-  // Add mode: any type may be picked. Edit mode: locked to the instance's type.
-  const typeOptions = Object.keys(TYPE_LABELS).filter((k) => editId === undefined || k === editing?.type)
+  // Add mode: any type may be picked, in TYPE_ORDER. Edit mode: locked to the
+  // instance's type. (Order comes from TYPE_ORDER, not from the TYPE_LABELS key
+  // order — the label map is a lookup only.)
+  const typeOptions = TYPE_ORDER.filter((k) => editId === undefined || k === editing?.type)
 
   return createElement('div', { style: overlay, onMouseDown: (e: React.MouseEvent) => { if (e.target === e.currentTarget) onClose() } },
     createElement('div', { style: modal, onClick: (e: React.MouseEvent) => e.stopPropagation() },
@@ -529,18 +577,18 @@ export function ImChannelModal(props: ImChannelModalProps) {
             onChange: (e: React.ChangeEvent<HTMLInputElement>) => handleEdit(f.key, e.target.value),
           }),
         )),
-        // QR-scan login (qq / weixin) — fill credentials automatically.
-        (type === 'qq' || type === 'weixin') && configApi ? (
+        // QR-scan login (qq / weixin / dingtalk / feishu / wecom) — fill credentials automatically.
+        (type === 'qq' || type === 'weixin' || type === 'dingtalk' || type === 'feishu' || type === 'wecom') && configApi ? (
           createElement('div', { style: qrBox },
             qr && qr.status === 'confirmed' ? (
               createElement('p', { style: qrHint }, t('qr.success'))
             ) : qr && qr.qrcodeUrl ? (
               [
                 createElement('img', { key: 'img', src: qr.qrcodeUrl, style: qrImg, alt: t('qr.alt') }),
-                createElement('p', { key: 'hint', style: qrHint }, qr.message || (type === 'qq' ? t('qr.qqHint') : t('qr.weixinHint')) + t('qr.fallback')),
+                createElement('p', { key: 'hint', style: qrHint }, qr.message || qrCopy(t, 'hint', type) + t('qr.fallback')),
                 createElement('div', { key: 'row', style: qrRow },
                   qr.qrcode ? createElement('a', { style: qrLink, href: qr.qrcode, target: '_blank', rel: 'noreferrer' }, qr.qrcode.slice(0, 60)) : null,
-                  createElement(Button, { variant: 'ghost', size: 'sm', onClick: () => void handleCancelQrLogin() }, t('btn.cancel')),
+                  createElement(Button, { variant: 'outline', size: 'sm', onClick: () => void handleCancelQrLogin() }, t('btn.cancel')),
                 ),
                 // WeChat pairing-code flow.
                 qr.verifyCodeNeeded || qr.status === 'need_verifycode' ? (
@@ -558,12 +606,14 @@ export function ImChannelModal(props: ImChannelModalProps) {
               ]
             ) : (
               [
-                createElement('p', { key: 'hint', style: qrHint }, qr?.message || (hasCredentials
-                  ? (type === 'qq' ? t('qr.bound.qq') : t('qr.bound.weixin'))
-                  : (type === 'qq' ? t('qr.unbound.qq') : t('qr.unbound.weixin')))),
+                createElement('p', { key: 'hint', style: qrHint }, qr?.message || qrCopy(t, hasCredentials ? 'bound' : 'unbound', type)),
+                // Official dsh button style: settings/dialog inline actions use
+                // `outline` + `size:'sm'` (an outlined capsule) — NOT `ghost`,
+                // which renders border-less/transparent and reads as plain text.
+                // dsh's own settings & plugin pages use outline 31× vs ghost 3×.
                 createElement(Button, {
                   key: 'start',
-                  variant: 'ghost',
+                  variant: 'outline',
                   size: 'sm',
                   onClick: () => void handleStartQrLogin(),
                   disabled: qrPolling,
@@ -574,9 +624,10 @@ export function ImChannelModal(props: ImChannelModalProps) {
         ) : null,
         error ? createElement('div', { style: errorStyle }, error) : null,
       ),
-      // Footer
+      // Footer. Official dialog footer = `outline` (md) cancel + `primary` (md)
+      // confirm — see dsh-client-ui-plugin-manager's own cancel/confirm pair.
       createElement('div', { style: footer },
-        createElement(Button, { variant: 'ghost', onClick: onClose }, t('btn.cancel')),
+        createElement(Button, { variant: 'outline', onClick: onClose }, t('btn.cancel')),
         createElement(Button, { variant: 'primary', onClick: () => void handleSave(), disabled: saving || !canSave },
           saving ? t('btn.saving') : t('btn.save'),
         ),

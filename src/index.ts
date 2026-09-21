@@ -1,7 +1,7 @@
 import { Context } from '@deepseek-ai/cordis'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings'
+import type {} from '@deepseek-ai/dsh-settings'
 import { ImGatewayService, Config } from './gateway/im-gateway'
 import type { ImGatewayConfig } from './gateway/types'
 import { syncChannels } from './sync'
@@ -14,6 +14,8 @@ export * from './gateway/types'
 export { ApprovalBroker } from './gateway/approval'
 export { QuestionBroker, formatQuestionPrompt, formatAnswerSummary, parseQuestionReply } from './gateway/questions'
 export { splitText } from './gateway/split'
+export { sanitizeOutboundText } from './gateway/sanitize'
+export { validateRemoteUrl, isReservedAddr, isTrustedHost } from './gateway/ssrf'
 export { SessionMerger, stripControlSuffix } from './gateway/merge'
 export { acquireInstanceLock } from './gateway/instance-lock'
 export { createTranslator, type Lang, type Translator } from './gateway/i18n'
@@ -27,7 +29,7 @@ export { createTranslator, type Lang, type Translator } from './gateway/i18n'
 export const inject = ['typert', 'settings']
 
 /** Settings namespace for the whole IM bundle (web UI renders `channels[]`). */
-const NS = settingsNamespace('im-gateway')
+const NS = 'im-gateway'
 
 /**
  * Single-entry IM gateway bundle. One plugin (`@lijian-ui/dsh-im-gateway`) provides the
@@ -57,7 +59,7 @@ export function apply(ctx: Context, config: ImGatewayConfig): void {
 
   // Register the bundle's editable settings namespace so the web UI
   // (设置 → IM 通道) can render the gateway + channel configs as forms.
-  installSettingsSection(ctx, NS, Config, config, {
+  ctx.settings?.installSection(ctx, NS, Config, config, {
     // Live-settings seam: the UI writes the user layer; `settings.describe`
     // below merges base + user, so UI-saved config is what actually runs.
     setSource: () => {},

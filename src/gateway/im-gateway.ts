@@ -1,6 +1,6 @@
 import { Context, Service } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
-import { SessionId } from '@deepseek-ai/dsh-session'
+import { SessionId, type Session } from '@deepseek-ai/dsh-session'
 import { createUserMessage, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock, UserMessage } from '@deepseek-ai/dsh-llm'
 import { installModelSelection } from '@deepseek-ai/dsh-agent'
@@ -20,14 +20,14 @@ import { StreamThrottle } from './stream'
 import { CommandHandler } from './commands'
 import type { GatewayHandle } from './commands'
 import { EventDispatcher } from './events'
+import { prefixSessionTitle } from './session-title'
 import { createTranslator, type Translator, breakChars } from './i18n'
-import { settingsNamespace } from '@deepseek-ai/dsh-settings'
 import type { ApprovalOutcome } from '@deepseek-ai/dsh-user-approval'
 import type { AskUserQuestionAnswer, AskUserQuestionRequest } from '@deepseek-ai/dsh-user-questions'
 // 引入 dsh-user-approval / dsh-user-questions 的模块增强（让 ctx.on('approval/request') 和 ctx.userQuestions 类型可用）
 import type {} from '@deepseek-ai/dsh-user-approval'
 import type {} from '@deepseek-ai/dsh-user-questions'
-import { existsSync, mkdirSync, readFileSync, writeFileSync, statSync, renameSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync, statSync, renameSync, realpathSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 
@@ -36,7 +36,7 @@ import { homedir } from 'node:os'
 // namespace (`im-gateway`), with `channels` as an ARRAY of instances — the
 // same channel type may appear many times (multi-bot support, mirroring
 // pi-desk-top's channel-instance model).
-export const Config = Schema.object({
+export const Config: Schema = Schema.object({
   cwd: Schema.string().default(process.cwd()),
   streamThrottleMs: Schema.number().default(800),
   slashCommands: Schema.boolean().default(true),
@@ -49,7 +49,7 @@ export const Config = Schema.object({
   channels: Schema.array(
     Schema.object({
       id: Schema.string().required(),
-      type: Schema.union(['dingtalk', 'qq', 'weixin']),
+      type: Schema.union(['dingtalk', 'qq', 'weixin', 'feishu', 'wecom']),
       name: Schema.string().default(''),
       enabled: Schema.boolean().default(false),
       // Loose merged credential schema: all channel types' fields are
@@ -63,12 +63,43 @@ export const Config = Schema.object({
         // qq
         appId: Schema.string().default(''),
         botAppId: Schema.string().default(''),
+        // qq — 出站引用回复（被动回复引用用户消息）
+        quoteReply: Schema.boolean().default(true),
+        // qq — 群策略
+        groupPolicy: Schema.union(['open', 'allowlist', 'disabled']).default('open'),
+        groupAllowFrom: Schema.array(Schema.string()).default([]),
+        defaultRequireMention: Schema.boolean().default(true),
+        groups: Schema.dict(
+          Schema.object({
+            requireMention: Schema.boolean(),
+            ignoreOtherMentions: Schema.boolean(),
+            toolPolicy: Schema.union(['full', 'restricted', 'none']),
+            name: Schema.string(),
+            prompt: Schema.string(),
+          }),
+        ).default({}),
+        // qq — 出站语音（OpenAI 兼容 TTS）
+        tts: Schema.object({
+          enabled: Schema.boolean().default(false),
+          baseUrl: Schema.string().default(''),
+          apiKey: Schema.string().role('secret').default(''),
+          model: Schema.string().default('tts-1'),
+          voice: Schema.string().default('alloy'),
+          format: Schema.string().default('mp3'),
+        }).default({} as never),
+        // feishu —— 复用 appId / clientSecret（见上方 qq 区块），另加平台域名；
+        // quoteReply / groupPolicy / groupAllowFrom / defaultRequireMention / groups
+        // 同样由飞书通道复用。
+        domain: Schema.union(['feishu', 'lark']).default('feishu'),
         // weixin (iLink weixin)
         baseUrl: Schema.string().default(''),
         token: Schema.string().role('secret').default(''),
         botId: Schema.string().default(''),
         cdnBaseUrl: Schema.string().default(''),
         pollIntervalMs: Schema.number().default(3000),
+        // wecom（企业微信智能机器人）—— 长连接专用密钥；groupPolicy /
+        // groupAllowFrom / groups 复用上方 qq 区块的同名字段。
+        secret: Schema.string().role('secret').default(''),
       }).default({} as never),
     }),
   ).default([]),
@@ -111,6 +142,16 @@ export class ImGatewayService extends Service implements ImGateway {
   /** Deduplicate concurrent ensureSession calls for the same conversation. */
   private readonly sessionCreations = new Map<string, Promise<SessionId>>()
   private readonly serialQueues = new Map<string, Promise<void>>()
+  /**
+   * Process-level inbound dedup (5-min TTL). Catches duplicate delivers from
+   * MULTIPLE adapter instances that exist simultaneously — dev HMR reloads
+   * can re-create adapters before old ones fully stop, and each adapter's
+   * own dedup only covers THAT instance. A single gateway-level map catches
+   * everything because ImGatewayService is a singleton.
+   * Key: channel-native messageId when available, else heuristic key.
+   */
+  private static readonly INBOUND_DEDUP_TTL_MS = 5 * 60 * 1000
+  private readonly seenInbounds = new Map<string, number>()
 
 
   private readonly agentHandles = new Map<string, AgentHandle>()
@@ -139,6 +180,7 @@ export class ImGatewayService extends Service implements ImGateway {
   /** /new 时用 Date.now() 作为 generation，确保 sessionId 唯一，避免 resume 旧会话。 */
   bumpSessionGeneration(convKey: string): void {
     this.sessionGenerations.set(convKey, Date.now())
+    this.persistGenerations()
   }
 
   /** 当前会话的工作区偏好（无则返回 undefined，调用方回退到 config.cwd）。 */
@@ -173,15 +215,47 @@ export class ImGatewayService extends Service implements ImGateway {
     } catch { /* file not found or invalid — start fresh */ }
   }
 
-  /** 持久化工作区偏好到 workspaces.json。 */
+  /** 持久化工作区偏好到 workspaces.json（`loadWorkspaces` 的逆操作）。 */
   private persistWorkspaces(): void {
     try {
       const stateDir = join(homedir(), '.dsh', 'im-gateway')
       mkdirSync(stateDir, { recursive: true })
-      const entries = [...this.workspaces.entries()]
-      writeFileSync(this.workspaceStorePath(), JSON.stringify(entries, null, 2))
+      writeFileSync(this.workspaceStorePath(), JSON.stringify([...this.workspaces.entries()], null, 2))
     } catch (err) {
-      this.ctx.logger.warn(`[im-gateway] 工作区偏好持久化失败: ${err instanceof Error ? err.message : String(err)}`)
+      this.ctx.logger.warn(`[im-gateway] workspace 持久化失败: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  /** 会话 generation 持久化文件路径。 */
+  private generationsStorePath(): string {
+    const stateDir = join(homedir(), '.dsh', 'im-gateway')
+    return join(stateDir, 'generations.json')
+  }
+
+  /** 加载持久化的 generation（启动时调用）。 */
+  private loadGenerations(): void {
+    try {
+      const raw = readFileSync(this.generationsStorePath(), 'utf8')
+      const entries = JSON.parse(raw) as Record<string, number>
+      if (entries && typeof entries === 'object') {
+        for (const [key, val] of Object.entries(entries)) {
+          if (typeof key === 'string' && typeof val === 'number') {
+            this.sessionGenerations.set(key, val)
+          }
+        }
+      }
+    } catch { /* file not found or invalid — start fresh */ }
+  }
+
+  /** 持久化 generation 到 generations.json。 */
+  private persistGenerations(): void {
+    try {
+      const stateDir = join(homedir(), '.dsh', 'im-gateway')
+      mkdirSync(stateDir, { recursive: true })
+      const obj = Object.fromEntries(this.sessionGenerations.entries())
+      writeFileSync(this.generationsStorePath(), JSON.stringify(obj, null, 2))
+    } catch (err) {
+      this.ctx.logger.warn(`[im-gateway] generation 持久化失败: ${err instanceof Error ? err.message : String(err)}`)
     }
   }
   /** Live channel runtime status, surfaced to the settings UI via getChannelStatuses. */
@@ -207,6 +281,8 @@ export class ImGatewayService extends Service implements ImGateway {
   /** 恢复 ctx.userQuestions.ask 原始实现（卸载时调用）。 */
   private restoreUserQuestionsAsk?: () => void
   private unsubSessionEvent?: () => void
+  private unsubAssistantStream?: () => void
+  private unsubSessionActivity?: () => void
   private unsubLocaleChange?: () => void
   private unsubApproval?: () => void
   private active = false
@@ -291,6 +367,10 @@ export class ImGatewayService extends Service implements ImGateway {
       this.active = false
       this.unsubSessionEvent?.()
       this.unsubSessionEvent = undefined
+      this.unsubAssistantStream?.()
+      this.unsubAssistantStream = undefined
+      this.unsubSessionActivity?.()
+      this.unsubSessionActivity = undefined
       this.unsubLocaleChange?.()
       this.unsubLocaleChange = undefined
       this.unsubApproval?.()
@@ -324,6 +404,7 @@ export class ImGatewayService extends Service implements ImGateway {
 
     this.active = true
     this.loadWorkspaces()
+    this.loadGenerations()
     this.streamThrottle = new StreamThrottle(this.config.streamThrottleMs)
     this.t = createTranslator(this.resolveLang())
     this.questionBroker.t = this.t
@@ -338,7 +419,7 @@ export class ImGatewayService extends Service implements ImGateway {
     this.commandHandler = new CommandHandler(this as unknown as GatewayHandle)
     // 监听全局语言切换（dsh 设置 → 通用设置 → 语言）
     this.unsubLocaleChange = this.ctx.root.on('settings/updated', (ns, next) => {
-      if (ns !== settingsNamespace('locale')) return
+      if (ns !== 'locale') return
       const lang = (next as { preference?: 'zh' | 'en' })?.preference ?? 'zh'
       this.t = createTranslator(lang)
       this.questionBroker.t = this.t
@@ -347,9 +428,33 @@ export class ImGatewayService extends Service implements ImGateway {
     // ctx that emitted them (no parent/child propagation), and session events
     // are emitted on the root context by the session service. A subscription
     // on this plugin's child ctx would silently receive NOTHING.
-    this.unsubSessionEvent = this.ctx.root.on('session/event', (session, event) =>
-      this.eventDispatcher!.dispatch(session, event),
+    this.unsubSessionEvent = this.ctx.root.on('session/event', (session, event) => {
+      // DIAG: 定位「重启后 resume 会话在 web UI 不渲染新消息」——确认 session/event
+      // 是否真的广播到 im-gateway。若这里能打印但 UI 不显示 → UI 订阅问题；不打印 → 广播断。
+      console.log(`[im-gateway] session/event id=${session.id} type=${event.type}`)
+      this.eventDispatcher!.dispatch(session, event)
+    })
+    // 实时逐字增量。与 session/event 的关键区别：session/event 里的
+    // assistant/message 要等一条消息**完成**才触发，靠它做流式只能是「憋完整段
+    // 再发」；而 agent loop 在整个模型尝试过程中会持续 emit
+    // `agent/assistant-stream`（web UI 的逐字渲染正是消费这条）。frame 里
+    // `type:'chunk'` + `chunk.type:'text-delta'` 即为一个文本增量。
+    //
+    // 该事件由 agent-scoped 派发，context 过滤会拦掉普通监听器 —— 必须显式
+    // 声明 `{ global: true }` 才能收到。
+    this.unsubAssistantStream = this.ctx.root.on(
+      'agent/assistant-stream',
+      ({ agent, frame }) => {
+        this.eventDispatcher!.dispatchAssistantStream(agent.session.id, frame)
+      },
+      { global: true },
     )
+    // DIAG: 确认 host 的 api-session/activity 是否发出并转发到前端列表。
+    // 官方 controller 对 user/message(source.kind=user) emit 此事件；
+    // 若这里能打印 → host→remote 转发链路起点正常。
+    this.unsubSessionActivity = this.ctx.root.on('api-session/activity', (sessionId, updatedAt) => {
+      console.log(`[im-gateway] api-session/activity id=${String(sessionId).slice(0, 32)} updatedAt=${updatedAt}`)
+    })
     // 审批桥：approval/request waterfall → 推送到会话所在 chat → 回复「批准/拒绝」→ 返回 verdict
     this.unsubApproval = this.ctx.root.on('approval/request', async (req, next) =>
       this.handleApprovalRequest(req, next),
@@ -363,6 +468,8 @@ export class ImGatewayService extends Service implements ImGateway {
     })
     // 注册 im_send_file 工具：agent 可把工作区文件发给当前 IM 聊天
     this.registerSendFileTool()
+    // 注册 im_send_voice 工具：agent 可把文本合成语音发给当前 IM 聊天
+    this.registerSendVoiceTool()
     for (const adapter of this.channels.values()) {
       try {
         await adapter.start()
@@ -376,6 +483,22 @@ export class ImGatewayService extends Service implements ImGateway {
   // ── inbound → agent ────────────────────────────────────────────────────
 
   async handleInbound(message: ImInboundMessage): Promise<void> {
+    // Process-level dedup — catches duplicates from concurrent adapter
+    // instances (dev HMR, reconnect races). Adapter's own dedup only covers
+    // one instance; this gateway map is singleton so nothing slips through.
+    const now = Date.now()
+    for (const [k, ts] of this.seenInbounds) {
+      if (now - ts > ImGatewayService.INBOUND_DEDUP_TTL_MS) this.seenInbounds.delete(k)
+    }
+    const dedupKey = message.messageId
+      ? `${message.channelId}:${message.messageId}`
+      : `${message.channelId}:${message.conversationId}:${message.userId}:${message.text.slice(0, 80)}`
+    if (this.seenInbounds.has(dedupKey)) {
+      this.ctx.logger.debug(`[im-gateway] duplicate inbound ${dedupKey.slice(0, 60)} — skipped`)
+      return
+    }
+    this.seenInbounds.set(dedupKey, now)
+
     const channel = this.channels.get(message.channelId)
     if (!channel) {
       this.ctx.logger.warn(`[im-gateway] inbound from unknown channel "${message.channelId}"`)
@@ -466,7 +589,26 @@ export class ImGatewayService extends Service implements ImGateway {
         .finally(() => this.sessionCreations.delete(convKey))
         .catch(() => undefined)
     }
-    return creation
+    const sessionId = await creation
+    // 重启后 resume 回来的旧会话不会再走官方标题链路（`first-prompt` 只在首条
+    // 消息后生成一次）——补一次前缀，否则旧的 IM 会话永远没有通道标识。
+    this.adoptExistingTitle(convKey, sessionId)
+    return sessionId
+  }
+
+  /**
+   * 给「已有标题但还没加通道前缀」的 IM 会话补前缀（幂等，见 session-title.ts）。
+   *
+   * 只处理已经落地标题的会话：新会话此刻还没有标题，会走 events.ts 的
+   * `session/title` 链路；这里负责的是重启后 resume 的老会话。
+   */
+  private adoptExistingTitle(convKey: string, sessionId: SessionId): void {
+    const channel = this.channelForConv(convKey)
+    if (!channel) return
+    const sessions = this.ctx.get('sessions') as { get(id: SessionId): Session | undefined } | undefined
+    const session = sessions?.get(sessionId)
+    if (!session) return
+    prefixSessionTitle(this.ctx, session, channel.label)
   }
 
   /**
@@ -488,7 +630,14 @@ export class ImGatewayService extends Service implements ImGateway {
     const generation = this.sessionGenerations.get(convKey) ?? 0
     const sessionId = SessionId(generation === 0 ? `im:${convKey}` : `im:${convKey}:${generation}`)
     const wsPref = this.workspaceOf(convKey)
-    console.log(`[im-gateway] ensureSession: convKey=${convKey} gen=${generation} sessionId=${sessionId} wsPref=${wsPref ?? '(none)'}`)
+    // Canonicalize cwd via realpath so session header.cwd matches
+    // workspaceRegistry.create's realpath-normalized path exactly. A trailing
+    // slash or symlink in the raw value would otherwise land the session in a
+    // different persistence directory than the workspace's attachSession check
+    // expects, making the session invisible in the web sidebar.
+    const rawCwd = wsPref ?? this.config.cwd
+    const effectiveCwd = safeRealpath(rawCwd)
+    console.log(`[im-gateway] ensureSession: convKey=${convKey} gen=${generation} sessionId=${sessionId} rawCwd="${rawCwd}" canonical="${effectiveCwd}"`)
 
     // 1) Live agent already exists (defensive; same-process reuse).
     const live = this.ctx.agents.get(sessionId)
@@ -516,7 +665,7 @@ export class ImGatewayService extends Service implements ImGateway {
         this.convToSession.set(convKey, sessionId)
         this.sessionToConv.set(sessionId, convKey)
         this.ctx.logger.info(`[im-gateway] resumed session ${sessionId} (history kept)`)
-        await this.attachToWorkspace(sessionId, wsPref ?? this.config.cwd)
+        await this.attachToWorkspace(sessionId, effectiveCwd)
         return sessionId
       }
     }
@@ -534,7 +683,6 @@ export class ImGatewayService extends Service implements ImGateway {
     // user never sees a bare "id collision".
     console.log(`[im-gateway] ensureSession: branch 3 (create new)`)
     let handle: AgentHandle
-    const effectiveCwd = wsPref ?? this.config.cwd
     console.log(`[im-gateway] ensureSession: effectiveCwd="${effectiveCwd}"`)
     try {
       handle = await this.ctx.agents.create({
@@ -563,6 +711,15 @@ export class ImGatewayService extends Service implements ImGateway {
     console.log(`[im-gateway] ensureSession: session created, calling attachToWorkspace`)
     await this.attachToWorkspace(sessionId, effectiveCwd)
     console.log(`[im-gateway] ensureSession: done for ${sessionId}`)
+    // 仅在首次对话（generation === 0）时 bump 一次：让后续重启用带时间戳的稳定 id，
+    // 避免产生 base id + 变体 id 两个 Session 对象导致 host/client 口径矛盾。
+    // 如果 generation 已 > 0（持久化已生效），不要 bump —— 保持 id 稳定才能 resume 同一会话。
+    if (generation === 0) {
+      const bumped = Date.now()
+      this.sessionGenerations.set(convKey, bumped)
+      this.persistGenerations()
+      console.log(`[im-gateway] ensureSession: first time — bumped gen to ${bumped} for future sessions of ${convKey}`)
+    }
     return sessionId
   }
 
@@ -586,7 +743,10 @@ export class ImGatewayService extends Service implements ImGateway {
     try {
       const workspaceRegistry = this.ctx.get('workspaceRegistry') as
         | {
-            create(path: string): Promise<{ attachSession(id: SessionId): Promise<void> }>
+            create(path: string): Promise<{
+              attachSession(id: SessionId): Promise<void>
+              detachSession?(id: SessionId): Promise<void>
+            }>
             list(): Array<{ path: string; sessionIds: string[] }>
           }
         | undefined
@@ -601,8 +761,19 @@ export class ImGatewayService extends Service implements ImGateway {
       const beforeIds = this.readWorkspaceSessionIds(effectiveCwd)
 
       const workspace = await workspaceRegistry.create(effectiveCwd)
+      // dsh 0.1.6 缺陷：attachSession 对"已 accounted 的稳定 session id"跳过 sessionPaths
+      // 内存索引填充（entity.js `if (!record.sessionIds.includes(sessionId))`）。IM session
+      // 跨重启 resume 同一稳定 id，进程重启后该 id 仍在 sessionIds 里但丢失内存索引，
+      // 投影 `sessionPath(id)===record.path` 把它从 UI 过滤 —— workspace.json 有记录但
+      // 侧边栏不渲染。先 detach 再 attach，强制走索引填充分支。
+      if (workspace.detachSession) {
+        await workspace.detachSession(sessionId).catch(() => undefined)
+      }
       await workspace.attachSession(sessionId)
       console.log(`[im-gateway] attachToWorkspace: attachSession succeeded`)
+      // DIAG: 打印这个会话在 workspace.json(raw) 与 workspaceRegistry 投影(projected)
+      // 中的归属。若 raw 有但 projected 无 → 被 sessionPath 索引过滤，UI 不显示。
+      void this.logWorkspaceState(`after attachToWorkspace ${String(sessionId).slice(0, 32)}`)
 
       // 恢复被 mutate 移除的旧会话（直接写 workspace.json，绕过 mutate 的过滤）
       const afterIds = this.readWorkspaceSessionIds(effectiveCwd)
@@ -698,11 +869,19 @@ export class ImGatewayService extends Service implements ImGateway {
   }
 
   /** Compute the initial model selection for a session (override → global → deployment default). */
-  currentModelFor(sessionId: SessionId): { provider?: string; model?: string; reasoningEffort?: string } | undefined {
+  currentModelFor(sessionId: SessionId): { provider?: string; model?: string; reasoningEffort?: ReturnType<typeof ReasoningEffortId> } | undefined {
     const override = this.modelOverrides.get(sessionId) ?? this.globalModelOverride
-    if (override) return override
+    if (override) {
+      return {
+        provider: override.provider,
+        model: override.model,
+        ...(override.reasoningEffort === undefined
+          ? {}
+          : { reasoningEffort: ReasoningEffortId(override.reasoningEffort) }),
+      }
+    }
     const defaults = this.ctx.get('agentDefaultModel') as
-      | { currentSelection(): { provider?: string; model?: string; reasoningEffort?: string } | undefined }
+      | { currentSelection(): { provider?: string; model?: string; reasoningEffort?: ReturnType<typeof ReasoningEffortId> } | undefined }
       | undefined
     return defaults?.currentSelection()
   }
@@ -814,7 +993,7 @@ export class ImGatewayService extends Service implements ImGateway {
         | { get(ns: unknown): { preference?: string } | undefined }
         | undefined
       if (!settings) return 'zh'
-      const section = settings.get(settingsNamespace('locale'))
+      const section = settings.get('locale')
       const pref = section?.preference
       return pref === 'en' ? 'en' : 'zh'
     } catch {
@@ -911,6 +1090,101 @@ export class ImGatewayService extends Service implements ImGateway {
     }
   }
 
+  // ── im_send_voice 工具 ──────────────────────────────────────────────
+
+  /** 注册 im_send_voice 工具：agent 把文本用 TTS 合成语音发给当前 IM 会话。 */
+  private registerSendVoiceTool(): void {
+    const tools = this.ctx.get('tools') as
+      | {
+          register(def: {
+            name: string
+            description: string
+            parameters: Record<string, unknown>
+            output: {
+              schema: Record<string, unknown>
+              render: (args: unknown, value: unknown) => unknown[]
+            }
+            execute: (args: unknown, exec: { agent?: { id: SessionId } }) => Promise<unknown>
+          }): () => void
+        }
+      | undefined
+    if (!tools?.register) return
+    try {
+      const disposer = tools.register({
+        name: 'im_send_voice',
+        description: this.t.t('gw.sendVoice.desc'),
+        parameters: {
+          type: 'object',
+          properties: {
+            text: { type: 'string', description: this.t.t('gw.sendVoice.textDesc') },
+            caption: { type: 'string', description: this.t.t('gw.sendVoice.captionDesc') },
+          },
+          required: ['text'],
+        },
+        output: {
+          schema: {
+            type: 'object',
+            properties: {
+              ok: { type: 'boolean' },
+              detail: { type: 'string' },
+            },
+            required: ['ok', 'detail'],
+          },
+          render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
+        },
+        execute: async (args, exec) => {
+          const { text, caption } = args as { text: string; caption?: string }
+          const sessionId = exec.agent?.id
+          return this.sendVoiceToChat(text, caption, sessionId ? String(sessionId) : undefined)
+        },
+      })
+      this.disposeTools.push(disposer)
+    } catch (err) {
+      this.ctx.logger.warn(`[im-gateway] im_send_voice 工具注册失败: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  /**
+   * 把文本合成为语音发送到会话关联的渠道（im_send_voice 工具的执行体）。
+   * 渠道不支持语音 / TTS 未配置 / 合成失败时一律降级为纯文本，保证内容送达。
+   */
+  async sendVoiceToChat(
+    text: string,
+    caption?: string,
+    sessionId?: string,
+  ): Promise<{ ok: boolean; detail: string }> {
+    if (!sessionId) {
+      return { ok: false, detail: this.t.t('gw.sendVoice.noSession') }
+    }
+    const convKey = this.sessionToConv.get(sessionId)
+    if (!convKey) {
+      return { ok: false, detail: this.t.t('gw.sendVoice.noChat') }
+    }
+    const channel = this.channelForConv(convKey)
+    if (!channel) {
+      return { ok: false, detail: this.t.t('gw.sendVoice.noChannel') }
+    }
+    const convId = convOf(convKey)
+    const textFallback = async (detail: string): Promise<{ ok: boolean; detail: string }> => {
+      if (caption) await channel.sendText(convId, caption).catch(() => undefined)
+      await channel.sendText(convId, text).catch(() => undefined)
+      return { ok: true, detail }
+    }
+    if (!channel.synthesizeVoice || !channel.sendVoice) {
+      return textFallback(this.t.t('gw.sendVoice.unsupported'))
+    }
+    try {
+      const voice = await channel.synthesizeVoice(text)
+      if (!voice) return textFallback(this.t.t('gw.sendVoice.ttsFailed'))
+      if (caption) await channel.sendText(convId, caption).catch(() => undefined)
+      await channel.sendVoice(convId, voice)
+      return { ok: true, detail: this.t.t('gw.sendVoice.sent') }
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err)
+      return { ok: false, detail: this.t.t('gw.sendVoice.failed', detail) }
+    }
+  }
+
   // ── 审批桥 ────────────────────────────────────────────────────────────
 
   /**
@@ -935,7 +1209,33 @@ export class ImGatewayService extends Service implements ImGateway {
       this.t.t('gw.approval.hint'),
     ].filter(Boolean).join('\n')
 
-    await channel.sendText(convId, text).catch(() => undefined)
+    // 结构化审批：渠道支持内联键盘时渲染可点击按钮（点击后 button_data = 按钮 id
+    // 经 handleInbound 回传，被识别为 verdict 关键字消费本审批）；否则退回纯文本提示。
+    if (channel.sendApprovalRequest) {
+      await channel
+        .sendApprovalRequest(convId, {
+          title: this.t.t('gw.approval.title', this.config.approvalTimeoutSecs),
+          body: [
+            this.t.t('gw.approval.tool', req.toolName),
+            req.reason ? this.t.t('gw.approval.reason', req.reason) : '',
+            this.t.t('gw.approval.hint'),
+          ]
+            .filter(Boolean)
+            .join('\n'),
+          timeoutSecs: this.config.approvalTimeoutSecs,
+          actions: [
+            { id: 'allow', label: this.t.t('gw.auth.approve'), style: 1 },
+            { id: 'reject', label: this.t.t('gw.auth.reject'), style: 0 },
+          ],
+        })
+        .catch((err) =>
+          this.ctx.logger.warn(
+            `[im-gateway] sendApprovalRequest failed: ${err instanceof Error ? err.message : String(err)}`,
+          ),
+        )
+    } else {
+      await channel.sendText(convId, text).catch(() => undefined)
+    }
     const verdict = await this.approvalBroker.wait(sessionId, timeoutMs, req.signal)
     if (verdict === 'allow') return 'allowed-once'
     if (verdict === 'reject') return 'rejected'
@@ -1146,5 +1446,29 @@ function toContentBlocks(message: ImInboundMessage): ContentBlock[] {
  */
 function isIdCollision(err: unknown): boolean {
   const message = err instanceof Error ? err.message : String(err)
-  return message.includes('id collision') || message.includes('already has a persisted log')
+  return (
+    message.includes('id collision')
+    || message.includes('already has a persisted log')
+    // SessionPersistence-jsonl 后端对已存在 session 的精确报错
+    || message.includes('already exists')
+  )
+}
+
+/**
+ * Canonicalize a filesystem path via `realpathSync`. Returns the realpath
+ * result when the path exists, otherwise the input as-is (with trailing
+ * slashes stripped if possible). The workspace registry and session
+ * persistence both expect canonical paths — passing a raw value that differs
+ * only by a trailing separator or symlink makes attachSession reject and the
+ * session disappears from the web sidebar.
+ */
+function safeRealpath(p: string): string {
+  try {
+    return realpathSync(p)
+  } catch {
+    // Path may not exist yet (workspace registry create validates existence
+    // itself). Still strip trailing separators to match what realpath would
+    // produce on an existing directory.
+    return p.replace(/[\\/]+$/, '')
+  }
 }

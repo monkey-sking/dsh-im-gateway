@@ -15,6 +15,8 @@
  * streaming can be layered on later (see dingtalk-card.ts in the reference).
  */
 import { Context } from '@deepseek-ai/cordis'
+import { existsSync, readFileSync, statSync } from 'node:fs'
+import { basename, extname } from 'node:path'
 import type { ChannelStatus, ImChannelAdapter, ImInboundMessage, ImImage, DingtalkChannelConfig } from '../gateway/types'
 import { DingtalkConnection } from './dingtalk-connection'
 import {
@@ -114,6 +116,9 @@ function extractQuotedMedia(container: any): string[] {
 // ── adapter ───────────────────────────────────────────────────────────────
 
 class DingtalkAdapter implements ImChannelAdapter {
+  /** 5-minute TTL — matches pi-desktop feishu/dingtalk connection dedup. */
+  private static readonly DEDUP_TTL_MS = 5 * 60 * 1000
+
   private conn: DingtalkConnection | null = null
   private active = false
   private token: { value: string; expiresAt: number } | null = null
@@ -128,6 +133,8 @@ class DingtalkAdapter implements ImChannelAdapter {
   statusListener?: (status: ChannelStatus) => void
   /** Active AI card per conversation — one streaming card at a time per peer. */
   private cards = new Map<string, AICardInstance | null>()
+  /** Seen message ids → timestamp — adapter-level dedup as a belt-and-braces guard. */
+  private readonly seenMsgIds = new Map<string, number>()
 
   constructor(
     private readonly ctx: Context,
@@ -177,7 +184,20 @@ class DingtalkAdapter implements ImChannelAdapter {
 
   // ── inbound → normalized message ──
 
-  private async handleRaw(rawData: string, _headers: Record<string, string>): Promise<void> {
+  /**
+   * Forward an inbound message to the gateway service. Resolved via
+   * `ctx.get('imGateway')` — NOT property access — because the adapter's ctx
+   * is NOT within imGateway's inject scope. Property access throws
+   * `cannot get property "imGateway" without inject` once the message handler
+   * runs outside the boot fiber (see the sync.ts design note). Matches the
+   * pattern already used in remote.ts:saveConfig.
+   */
+  private deliver(msg: ImInboundMessage): Promise<void> {
+    const gw = this.ctx.get('imGateway') as { handleInbound(m: ImInboundMessage): Promise<void> } | undefined
+    return gw ? gw.handleInbound(msg) : Promise.resolve()
+  }
+
+  private async handleRaw(rawData: string, headers: Record<string, string>): Promise<void> {
     let data: DingtalkMessageData
     try {
       data = JSON.parse(rawData)
@@ -193,6 +213,21 @@ class DingtalkAdapter implements ImChannelAdapter {
       msgtype === 'file'
     if (!supported) return
     if (data.conversationType !== '1' && data.conversationType !== '2') return
+
+    // ── Dedup guard: double-check even though dingtalk-connection already dedups ──
+    const msgId = data.msgId ?? headers.messageId
+    if (msgId) {
+      const msgKey = `${msgtype}:${msgId}`
+      const now = Date.now()
+      for (const [k, ts] of this.seenMsgIds) {
+        if (now - ts > DingtalkAdapter.DEDUP_TTL_MS) this.seenMsgIds.delete(k)
+      }
+      if (this.seenMsgIds.has(msgKey)) {
+        this.ctx.logger.debug(`[im-channel-dingtalk:${this.id}] duplicate message ${msgKey} — skipped`)
+        return
+      }
+      this.seenMsgIds.set(msgKey, now)
+    }
 
     const isGroup = data.conversationType === '2'
     const peer = isGroup ? data.conversationId ?? '' : data.senderStaffId ?? data.senderId ?? ''
@@ -262,8 +297,9 @@ class DingtalkAdapter implements ImChannelAdapter {
       text,
       senderNick: data.senderNick,
       isGroup,
+      messageId: String(data.msgId ?? headers.messageId ?? ''),
     }
-    void this.ctx.imGateway.handleInbound(message).catch((err) =>
+    void this.deliver(message).catch((err) =>
       this.ctx.logger.error('[im-channel-dingtalk] handleInbound failed', err),
     )
   }
@@ -329,6 +365,73 @@ class DingtalkAdapter implements ImChannelAdapter {
       })
     } catch (err) {
       this.ctx.logger.error('[im-channel-dingtalk] sendImage error', err)
+    }
+  }
+
+  async sendMedia(conversationId: string, filePath: string, caption?: string): Promise<void> {
+    const info = this.peerInfo.get(conversationId)
+    if (!info?.webhook) {
+      this.ctx.logger.warn(`[im-channel-dingtalk:${this.id}] sendMedia: no sessionWebhook for peer ${conversationId}`)
+      return
+    }
+    if (!info.isGroup) {
+      // DingTalk 机器人 webhook 只支持群聊发文件/图片，单聊 webhook 不支持 media msgtype
+      this.ctx.logger.warn(`[im-channel-dingtalk:${this.id}] sendMedia: webhook single-chat does not support file/image — skipping ${basename(filePath)}`)
+      return
+    }
+    if (!existsSync(filePath)) {
+      this.ctx.logger.warn(`[im-channel-dingtalk:${this.id}] sendMedia: path does not exist: ${filePath}`)
+      return
+    }
+    let size: number
+    try {
+      size = statSync(filePath).size
+    } catch (err) {
+      this.ctx.logger.warn(`[im-channel-dingtalk:${this.id}] sendMedia: cannot stat ${filePath}: ${String(err)}`)
+      return
+    }
+    const fileName = basename(filePath)
+    const ext = extname(filePath).toLowerCase()
+    const isImage = /\.(png|jpe?g|gif|bmp|webp)$/i.test(filePath)
+    const MAX_IMAGE = 10 * 1024 * 1024 // 10MB
+    const MAX_FILE = 20 * 1024 * 1024 // 20MB
+    const maxSize = isImage ? MAX_IMAGE : MAX_FILE
+    if (size > maxSize) {
+      this.ctx.logger.warn(
+        `[im-channel-dingtalk:${this.id}] sendMedia: file too large (${size} bytes, limit ${maxSize}): ${fileName}`,
+      )
+      return
+    }
+    if (caption) {
+      await this.sendText(conversationId, caption)
+    }
+    try {
+      const token = await this.getToken()
+      const buf = readFileSync(filePath)
+      const blobType = isImage ? mimeByExt(ext) : 'application/octet-stream'
+      const form = new FormData()
+      form.append('media', new Blob([buf], { type: blobType }), fileName)
+      const up = await fetch(
+        `https://oapi.dingtalk.com/media/upload?access_token=${token}&type=${isImage ? 'image' : 'file'}`,
+        { method: 'POST', body: form },
+      )
+      const upJson = (await up.json()) as any
+      if (upJson.errcode) {
+        this.ctx.logger.warn(
+          `[im-channel-dingtalk:${this.id}] sendMedia upload failed: ${upJson.errcode} ${upJson.errmsg}`,
+        )
+        return
+      }
+      const webhookBody: Record<string, any> = isImage
+        ? { msgtype: 'image', image: { media_id: upJson.media_id } }
+        : { msgtype: 'file', file: { media_id: upJson.media_id } }
+      await fetch(info.webhook, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(webhookBody),
+      })
+    } catch (err) {
+      this.ctx.logger.warn(`[im-channel-dingtalk:${this.id}] sendMedia error: ${String(err)}`)
     }
   }
 
@@ -430,6 +533,19 @@ class DingtalkAdapter implements ImChannelAdapter {
 
 /** DingTalk card streaming API caps a single content frame at ~1K. */
 const CARD_STREAM_FRAME_LIMIT = 1000
+
+/** Minimal ext → MIME for image upload Blob type. */
+function mimeByExt(ext: string): string {
+  switch (ext) {
+    case '.png': return 'image/png'
+    case '.jpg':
+    case '.jpeg': return 'image/jpeg'
+    case '.gif': return 'image/gif'
+    case '.bmp': return 'image/bmp'
+    case '.webp': return 'image/webp'
+    default: return 'application/octet-stream'
+  }
+}
 
 /** Export the adapter class for the single-entry bundle to instantiate. */
 export { DingtalkAdapter }

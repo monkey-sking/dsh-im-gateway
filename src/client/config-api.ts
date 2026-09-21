@@ -8,12 +8,17 @@
  * namespaces with `settings-not-exposed`) and the earlier raw webServer
  * fetch route.
  *
+ * The wire contract is the shared artifact src/typert.remote-client.ts
+ * (exported as ./remote), mirroring the official generator's emitRemote.
  * Browser-half constraints: no JSX, platform modules only.
  */
-import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
-import type { TypertRemoteContribution } from '@deepseek-ai/dsh-typert-protocol'
+import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import type { ImChannelInstance } from './ImChannelModal.ts'
 import type { ChannelStatus } from '../gateway/types'
+import { TYPERT_REMOTE } from '../typert.remote-client'
+
+/** Remote namespace exposed by the host face (src/typert.host.ts). */
+const REMOTE_NS = 'imGatewayRemote'
 
 export interface ConfigLoadResult {
   ok: boolean
@@ -30,7 +35,7 @@ export interface ChannelStatusesResult {
   message?: string
 }
 
-/** Unified QR-login snapshot for both qq (bot binding) and weixin (iLink). */
+/** Unified QR-login snapshot for every QR-bound channel (qq / weixin / dingtalk / feishu / wecom). */
 export interface QrLoginStatus {
   loginId: string
   status: string
@@ -59,7 +64,7 @@ export interface ConfigApi {
   save(channels: ImChannelInstance[], expectedRevision?: number): Promise<ConfigLoadResult>
   /** GET live channel runtime statuses (online/offline/error). */
   statuses(): Promise<ChannelStatusesResult>
-  /** Start a QR-scan login ('qq' | 'weixin'). */
+  /** Start a QR-scan login ('qq' | 'weixin' | 'dingtalk' | 'feishu' | 'wecom'). */
   startQrLogin(channelType: string): Promise<QrLoginResult>
   /** Poll the current QR-login snapshot. */
   getQrLoginStatus(loginId: string): Promise<QrLoginResult>
@@ -69,116 +74,21 @@ export interface ConfigApi {
   cancelQrLogin(loginId: string): Promise<{ ok: boolean; value?: boolean; code?: string; message?: string }>
 }
 
-const PACKAGE = '@lijian-ui/dsh-im-gateway'
-const SERVICE = 'imGatewayRemote'
-
-/** Identity codec — the host manifest owns strict validation. */
-const identity = (value: unknown): unknown => value
-const codec = (symbol: string) => ({ mode: 'strict' as const, typeSymbol: symbol, schema: { parse: identity } })
-
-/** Wire descriptors mirroring the host contribution (src/remote.ts). */
-const CONTRIBUTION: TypertRemoteContribution = {
-  package: PACKAGE,
-  descriptors: [
-    {
-      id: `${PACKAGE}#${SERVICE}/getConfig`,
-      service: SERVICE,
-      namespace: SERVICE,
-      method: 'getConfig',
-      invocation: { kind: 'direct' },
-      parameters: [],
-      result: codec(`${PACKAGE}#ImGatewayConfigView`),
-    },
-    {
-      id: `${PACKAGE}#${SERVICE}/saveConfig`,
-      service: SERVICE,
-      namespace: SERVICE,
-      method: 'saveConfig',
-      invocation: { kind: 'direct' },
-      parameters: [
-        { name: 'channels', wire: 'channels', source: 'json', codec: codec(`${PACKAGE}#ChannelsArray`) },
-        {
-          name: 'expectedRevision',
-          wire: 'expectedRevision',
-          source: 'json',
-          acceptsUndefined: true,
-          codec: codec(`${PACKAGE}#Revision`),
-        },
-      ],
-      result: codec(`${PACKAGE}#ImGatewayConfigView`),
-    },
-    {
-      id: `${PACKAGE}#${SERVICE}/getChannelStatuses`,
-      service: SERVICE,
-      namespace: SERVICE,
-      method: 'getChannelStatuses',
-      invocation: { kind: 'direct' },
-      parameters: [],
-      result: codec(`${PACKAGE}#ChannelStatuses`),
-    },
-    {
-      id: `${PACKAGE}#${SERVICE}/startQrLogin`,
-      service: SERVICE,
-      namespace: SERVICE,
-      method: 'startQrLogin',
-      invocation: { kind: 'direct' },
-      parameters: [
-        { name: 'channelType', wire: 'channelType', source: 'json', codec: codec(`${PACKAGE}#ChannelType`) },
-      ],
-      result: codec(`${PACKAGE}#QrLoginStatus`),
-    },
-    {
-      id: `${PACKAGE}#${SERVICE}/getQrLoginStatus`,
-      service: SERVICE,
-      namespace: SERVICE,
-      method: 'getQrLoginStatus',
-      invocation: { kind: 'direct' },
-      parameters: [
-        { name: 'loginId', wire: 'loginId', source: 'json', codec: codec(`${PACKAGE}#LoginId`) },
-      ],
-      result: codec(`${PACKAGE}#QrLoginStatus`),
-    },
-    {
-      id: `${PACKAGE}#${SERVICE}/submitQrVerifyCode`,
-      service: SERVICE,
-      namespace: SERVICE,
-      method: 'submitQrVerifyCode',
-      invocation: { kind: 'direct' },
-      parameters: [
-        { name: 'loginId', wire: 'loginId', source: 'json', codec: codec(`${PACKAGE}#LoginId`) },
-        { name: 'code', wire: 'code', source: 'json', codec: codec(`${PACKAGE}#VerifyCode`) },
-      ],
-      result: codec(`${PACKAGE}#Bool`),
-    },
-    {
-      id: `${PACKAGE}#${SERVICE}/cancelQrLogin`,
-      service: SERVICE,
-      namespace: SERVICE,
-      method: 'cancelQrLogin',
-      invocation: { kind: 'direct' },
-      parameters: [
-        { name: 'loginId', wire: 'loginId', source: 'json', codec: codec(`${PACKAGE}#LoginId`) },
-      ],
-      result: codec(`${PACKAGE}#Bool`),
-    },
-  ],
-}
-
 /**
  * Create the config api bound to this browser plugin's context.
- * Mounts the remote contribution once; every call awaits the mount, then
+ * Mounts the shared remote contribution once; every call awaits the mount, then
  * invokes the namespace service and unwraps the `{ok, value/error}` envelope.
  */
 export function createConfigApi(ctx: ClientContext): ConfigApi {
-  const mount = ctx.remote.$mount(CONTRIBUTION)
+  const mount = ctx.remote.$mount(TYPERT_REMOTE)
 
   const call = async (method: 'getConfig' | 'saveConfig' | 'getChannelStatuses' | 'startQrLogin' | 'getQrLoginStatus' | 'submitQrVerifyCode' | 'cancelQrLogin', ...args: unknown[]): Promise<ConfigLoadResult | ChannelStatusesResult | QrLoginResult | { ok: boolean; value?: boolean; code?: string; message?: string }> => {
     try {
       await mount
-      const remote = ctx.get(`remote.${SERVICE}`) as unknown as Record<string, (...a: unknown[]) => Promise<{ ok: boolean; value?: unknown; error?: { code?: string; message?: string } }>>
+      const remote = ctx.get(`remote.${REMOTE_NS}`) as unknown as Record<string, (...a: unknown[]) => Promise<{ ok: boolean; value?: unknown; error?: { code?: string; message?: string } }>>
       const result = await remote[method](...args)
       if (!result.ok) {
-        return { ok: false, code: result.error?.code ?? 'remote-error', message: result.error?.message ?? `${SERVICE}.${method} failed` }
+        return { ok: false, code: result.error?.code ?? 'remote-error', message: result.error?.message ?? `${REMOTE_NS}.${method} failed` }
       }
       return { ...(result.value as ConfigLoadResult & ChannelStatusesResult & QrLoginResult), ok: true }
     } catch (err) {
