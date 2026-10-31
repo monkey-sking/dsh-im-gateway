@@ -1,7 +1,7 @@
 # @lijian-ui/dsh-im-gateway
 
 <!-- badges:start -->
-[![Stars](https://img.shields.io/github/stars/monkey-sking/dsh-im-gateway?style=flat-square)](https://github.com/monkey-sking/dsh-im-gateway/stargazers) [![Forks](https://img.shields.io/github/forks/monkey-sking/dsh-im-gateway?style=flat-square)](https://github.com/monkey-sking/dsh-im-gateway/network/members) [![Last commit](https://img.shields.io/github/last-commit/monkey-sking/dsh-im-gateway?style=flat-square)](https://github.com/monkey-sking/dsh-im-gateway/commits/main)
+[![Stars](https://img.shields.io/github/stars/monkey-sking/dsh-im-gateway?style=flat-square)](https://github.com/monkey-sking/dsh-im-gateway/stargazers) [![Forks](https://img.shields.io/github/forks/monkey-sking/dsh-im-gateway?style=flat-square)](https://github.com/monkey-sking/dsh-im-gateway/network/members) [![Last commit](https://img.shields.io/github/last-commit/monkey-sking/dsh-im-gateway?style=flat-square)](https://github.com/monkey-sking/dsh-im-gateway/commits/main) [![Language](https://img.shields.io/github/languages/top/monkey-sking/dsh-im-gateway?style=flat-square)](https://github.com/monkey-sking/dsh-im-gateway/search?l=) [![npm downloads](https://img.shields.io/npm/dm/%40lijian-ui/dsh-im-gateway?style=flat-square)](https://www.npmjs.com/package/%40lijian-ui/dsh-im-gateway)
 <!-- badges:end -->
 
 [English](./README.en.md) | 简体中文
