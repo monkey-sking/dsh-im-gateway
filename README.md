@@ -1,5 +1,9 @@
 # @lijian-ui/dsh-im-gateway
 
+<!-- badges:start -->
+[![Stars](https://img.shields.io/github/stars/monkey-sking/dsh-im-gateway?style=flat-square)](https://github.com/monkey-sking/dsh-im-gateway/stargazers) [![Forks](https://img.shields.io/github/forks/monkey-sking/dsh-im-gateway?style=flat-square)](https://github.com/monkey-sking/dsh-im-gateway/network/members) [![Last commit](https://img.shields.io/github/last-commit/monkey-sking/dsh-im-gateway?style=flat-square)](https://github.com/monkey-sking/dsh-im-gateway/commits/main)
+<!-- badges:end -->
+
 [English](./README.en.md) | 简体中文
 
 > 为 **DeepSeek Harness (dsh)** 提供多 IM 通道接入的网关插件：钉钉 / QQ / 个人微信 / 飞书 / 企业微信，支持扫码绑定、流式回复、工具审批、交互提问、长文本分片、多段合并、双语界面。
